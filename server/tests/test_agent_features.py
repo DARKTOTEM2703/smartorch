@@ -42,7 +42,7 @@ class AgentFeatureTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def play(self, replies, answers=(), user="revisa esto", timeout=None, **kwargs):
+    def play(self, replies, answers=(), user="modifica esto", timeout=None, **kwargs):
         """Corre el agente en un hilo. `answers`: valores con los que se responde, en orden, a
         cada aprobacion o pregunta pendiente (True/False para aprobaciones, texto para preguntas)."""
         fake = FakeModel(replies)
@@ -148,7 +148,7 @@ class AgentFeatureTests(unittest.TestCase):
             call("read_file", path="app.py"),                      # explorador
             final("app.py:1 define hola()"),                       # explorador termina
             final("hola está en app.py"),                          # agente principal responde
-        ])
+        ], user="explica esto")
         sub = [e for e in events if e.get("agent") == "explorer"]
         self.assertTrue(any(e["type"] == "tool_call" and e["name"] == "read_file" for e in sub))
         explore_result = [e for e in events if e["type"] == "tool_result" and e["name"] == "explore"][0]
@@ -224,12 +224,18 @@ class AgentFeatureTests(unittest.TestCase):
         self.assertTrue(any("TESTS FALLARON" in t and "intento 1/3" in t and "edit_file" in t for t in tool_msgs))
         self.assertEqual(len(fake.received), 4)
 
-    def test_normal_effort_does_not_force_tests(self):
+    def test_rapid_effort_does_not_run_tests(self):
         self._project_with_failing_tests()
         events, _ = self.play([call("edit_file", path="calc.py", old_text="a * b", new_text="a - b"), final("hecho")],
-                              answers=[True], effort="normal")
-        self.assertEqual([e["content"] for e in self.of(events, "final")], ["hecho"])
+                              answers=[True], effort="rapido")
         self.assertFalse([e for e in self.of(events, "tool_call") if e["name"] == "run_tests"])
+
+    def test_normal_effort_verifies_with_tests_after_editing(self):
+        self._project_with_failing_tests()
+        events, _ = self.play([call("edit_file", path="calc.py", old_text="a * b", new_text="a / b"), final("hecho")],
+                              answers=[True, True], effort="normal", user="arregla el bug de calc.py")
+        runs = [e for e in self.of(events, "tool_result") if e["name"] == "run_tests"]
+        self.assertEqual([r["ok"] for r in runs], [True])
 
     def test_repair_attempts_are_limited_and_the_failure_is_reported_honestly(self):
         self._project_with_failing_tests()
@@ -372,7 +378,7 @@ class AgentFeatureTests(unittest.TestCase):
         self.assertNotIn("explore", fake.specs_seen[0])
 
     def test_identical_repeated_calls_are_cut_off_with_a_hint(self):
-        events, fake = self.play([call("glob", pattern="*.xyz") for _ in range(5)] + [final("ya basta")])
+        events, fake = self.play([call("glob", pattern="*.xyz") for _ in range(5)] + [final("ya basta")], user="explica esto")
         results = self.of(events, "tool_result")
         self.assertTrue(results[0]["ok"] and results[1]["ok"])
         self.assertFalse(results[2]["ok"])
@@ -380,7 +386,7 @@ class AgentFeatureTests(unittest.TestCase):
         self.assertEqual(self.of(events, "final")[0]["content"], "ya basta")
 
     def test_an_empty_answer_gets_one_nudge(self):
-        events, fake = self.play([final(""), final("ahora sí")])
+        events, fake = self.play([final(""), final("ahora sí")], user="explica esto")
         self.assertEqual([e["content"] for e in self.of(events, "final")], ["ahora sí"])
         self.assertIn("No escribiste ninguna respuesta", fake.received[1][-1]["content"])
 

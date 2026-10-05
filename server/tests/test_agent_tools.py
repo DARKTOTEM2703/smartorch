@@ -215,5 +215,78 @@ class SandboxTests(unittest.TestCase):
         self.assertFalse(any(tools.is_mutating(t) for t in ("read_file", "list_files", "search_text")))
 
 
+class AppendGuardTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.root = tempfile.mkdtemp(prefix="so-append-")
+        self.sb = tools.Sandbox(self.root)
+        base = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertEqual(1, 1)\n"
+        __import__("pathlib").Path(self.root, "t.py").write_text(base, encoding="utf-8")
+
+    def test_new_code_is_appended(self):
+        self.assertTrue(tools.append_file(self.sb, "t.py", "def helper():\n    return 1").ok)
+
+    def test_redefining_an_existing_function_or_class_is_refused_with_guidance(self):
+        with self.assertRaises(SandboxError) as ctx:
+            tools.append_file(self.sb, "t.py", "class T(unittest.TestCase):\n    def test_b(self):\n        pass")
+        self.assertIn("T ya existe", str(ctx.exception))
+        self.assertIn("edit_file", str(ctx.exception))
+
+    def test_pasting_the_whole_file_again_is_refused(self):
+        config = "A = 1\nB = 2\nC = 3\nD = 4\n"
+        __import__("pathlib").Path(self.root, "cfg.py").write_text(config, encoding="utf-8")
+        with self.assertRaises(SandboxError) as ctx:
+            tools.append_file(self.sb, "cfg.py", config + "E = 5\n")
+        self.assertIn("Casi todo ese contenido ya está", str(ctx.exception))
+        self.assertTrue(tools.append_file(self.sb, "cfg.py", "E = 5\nF = 6\nG = 7\nH = 8\n").ok)
+
+    def test_write_file_refuses_to_wipe_existing_definitions_unless_overwrite(self):
+        path = __import__("pathlib").Path(self.root, "calc.py")
+        path.write_text("def add(a, b):\n    return a + b\n\n\ndef divide(a, b):\n    return a / b\n", encoding="utf-8")
+        with self.assertRaises(SandboxError) as ctx:
+            tools.write_file(self.sb, "calc.py", "def power(a, b):\n    return a ** b\n")
+        self.assertIn("perdería: add, divide", str(ctx.exception))
+        self.assertIn("append_file", str(ctx.exception))
+        self.assertIn("def add", path.read_text(encoding="utf-8"))  # no se toco
+        with self.assertRaises(SandboxError):  # tampoco se le ofrece al usuario aprobar algo asi
+            tools.preview(self.sb, "write_file", {"path": "calc.py", "content": "def power(a, b):\n    return a ** b\n"})
+        self.assertTrue(tools.write_file(self.sb, "calc.py", "def power(a, b):\n    return a ** b\n", overwrite=True).ok)
+
+    def test_write_file_still_allows_new_files_and_rewrites_that_keep_everything(self):
+        path = __import__("pathlib").Path(self.root, "calc.py")
+        path.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        self.assertTrue(tools.write_file(self.sb, "calc.py", '"""Doc."""\n\n\ndef add(a, b):\n    return a + b  # ok\n').ok)
+        self.assertTrue(tools.write_file(self.sb, "otro.py", "def x():\n    return 1\n").ok)
+
+    def test_add_to_class_inserts_a_method_inside_the_class_with_correct_indent(self):
+        path = __import__("pathlib").Path(self.root, "t.py")
+        path.write_text(path.read_text(encoding="utf-8") + "\n\nif __name__ == '__main__':\n    unittest.main()\n", encoding="utf-8")
+        out = tools.add_to_class(self.sb, "t.py", "T", "def test_b(self):\n    self.assertTrue(True)")
+        self.assertTrue(out.ok)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("    def test_b(self):\n        self.assertTrue(True)\n", text)
+        self.assertLess(text.index("def test_b"), text.index("if __name__"))  # queda dentro de la clase, antes del final del archivo
+        compile(text, "t.py", "exec")
+
+    def test_add_to_class_handles_already_indented_content_and_unknown_classes(self):
+        self.assertTrue(tools.add_to_class(self.sb, "t.py", "T", "    def test_c(self):\n        pass").ok)
+        with self.assertRaises(SandboxError) as ctx:
+            tools.add_to_class(self.sb, "t.py", "Nope", "def x(self): pass")
+        self.assertIn("Clases que sí hay: T", str(ctx.exception))
+        with self.assertRaises(SandboxError):
+            tools.add_to_class(self.sb, "t.py", "T", "def test_c(self):\n    pass")  # ya existe en la clase
+        with self.assertRaises(SandboxError):
+            tools.add_to_class(self.sb, "nuevo.txt", "T", "def x(self): pass")
+
+    def test_add_to_class_is_a_mutating_tool_with_preview(self):
+        self.assertTrue(tools.is_mutating("add_to_class"))
+        args = {"path": "t.py", "class_name": "T", "content": "def test_d(self):\n    pass"}
+        self.assertIn("+    def test_d(self):", tools.preview(self.sb, "add_to_class", args))
+        self.assertIn("add_to_class", [s["function"]["name"] for s in tools.specs_for()])
+
+    def test_creating_a_new_file_is_never_blocked(self):
+        self.assertTrue(tools.append_file(self.sb, "nuevo.py", "def x():\n    return 1\n\n\ndef y():\n    return 2").ok)
+
+
 if __name__ == "__main__":
     unittest.main()

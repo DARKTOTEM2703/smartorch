@@ -214,6 +214,15 @@
         "title": "Eliminar conversación",
         "category": "SmartOrch",
         "icon": "$(trash)"
+      },
+      {
+        "command": "smartorch.buildMap",
+        "title": "SmartOrch: Construir mapa del proyecto",
+        "icon": "$(book)"
+      },
+      {
+        "command": "smartorch.forgetExperiences",
+        "title": "SmartOrch: Gestionar lo aprendido del proyecto"
       }
     ],
     "submenus": [
@@ -312,6 +321,11 @@
         },
         {
           "command": "smartorch.analyzeProject",
+          "when": "view == smartorch.projectView",
+          "group": "navigation"
+        },
+        {
+          "command": "smartorch.buildMap",
           "when": "view == smartorch.projectView",
           "group": "navigation"
         }

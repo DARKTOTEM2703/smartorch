@@ -16,6 +16,7 @@ Eventos que emite run() (diccionarios JSON):
   start, step, text, todo, tool_call, approval_wait, ask, tool_result, compact, final, error, done
 Los eventos del explorador llevan "agent": "explorer".
 """
+import ast
 import json
 import os
 import re
@@ -41,6 +42,9 @@ MEMORY_FILES = ("SMARTORCH.md", "AGENTS.md", "CLAUDE.md")
 MEMORY_CHARS = 2500
 EXPLORE_MIN_FILES = 30
 MAX_REPEATS = 2
+MAX_CALLS_PER_STEP = 4   # un modelo chico a veces emite decenas de llamadas en un mensaje
+# cuantos empujones en lenguaje natural antes de pedir la llamada como JSON restringido (un 8B rara vez obedece el regaño)
+FORCE_AFTER = {"rapido": 0, "normal": 1, "maximo": 1}
 
 SYSTEM = """Eres SmartOrch, un agente de programación que corre en local. Trabajas dentro del proyecto «{name}».
 
@@ -54,6 +58,7 @@ Reglas:
 - Para preguntas generales sobre el proyecto, abre con read_file el README y los archivos principales antes de responder; nunca respondas con «probablemente» sobre un archivo que no abriste.
 - Para modificar un archivo existente usa edit_file con un old_text exacto y único. write_file solo para archivos nuevos o reescrituras completas.
 - Para AGREGAR código nuevo a un archivo (una función, un test) usa append_file: no necesitas old_text.
+- Para añadir un método o un test DENTRO de una clase existente (p. ej. unittest.TestCase) usa add_to_class(path, class_name, content).
 - Para renombrar o reemplazar algo en varios archivos usa replace_in_files (una sola llamada); no edites archivo por archivo.
 {ask_rule}- Para tareas de varios pasos, anota tu plan con todo_write y márcalo al avanzar.
 - Los nombres en el código suelen estar en inglés (discount, price, user): busca también en inglés aunque el usuario hable en español.
@@ -197,26 +202,45 @@ def _chat_json(model: str, messages: list[dict], schema: dict, eff: "effort_mod.
         raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}") from e
 
 
-def _forced_calls(st: "RunState", convo: list[dict], specs: list[dict], narration: str) -> list[dict]:
+def _forced_calls(st: "RunState", convo: list[dict], specs: list[dict], narration: str,
+                  completion_of: Optional[str] = None) -> list[dict]:
     """
     El modelo narra lo que haria en vez de llamar a una herramienta. Se le pide la llamada como JSON
     restringido por esquema: asi decide el QUE, pero ya no puede responder con prosa.
+
+    Con `completion_of` (la peticion original) hace de juez de completitud: el modelo dice si TODO lo pedido
+    quedo hecho y, si falta un paso, cual. Un 8B suele hacer la primera mitad de «agrega X y un test» y dar por terminado.
     """
     by_name = {s["function"]["name"]: s["function"] for s in specs}
-    doing = [n for n in ("append_file", "edit_file", "write_file", "replace_in_files") if n in by_name]
+    doing = [n for n in ("add_to_class", "append_file", "edit_file", "write_file", "replace_in_files") if n in by_name]
     if not doing:
         return []
     schema = {"type": "object", "required": ["tool", "arguments"],
               "properties": {"tool": {"type": "string", "enum": doing}, "arguments": {"type": "object"}}}
     guide = "; ".join(f"{n}({', '.join(by_name[n]['parameters']['properties'])})" for n in doing)
-    ask = ("Ejecuta ahora lo que describiste. Responde SOLO con la llamada a la herramienta en JSON: "
-           '{"tool": <nombre>, "arguments": {...}}. Herramientas: ' + guide +
-           ". append_file agrega código nuevo al final de un archivo; edit_file cambia texto que ya existe.")
-    messages = [m for m in convo if m.get("role") != "system" or m is convo[0]]
-    messages = messages + [{"role": "assistant", "content": narration or "Voy a hacer el cambio."}, {"role": "user", "content": ask}]
+    tools_help = (" Herramientas: " + guide +
+                  ". append_file agrega código nuevo al final de un archivo; edit_file cambia texto que ya existe.")
+    if completion_of is None:
+        ask = ("Ejecuta ahora lo que describiste. Responde SOLO con la llamada a la herramienta en JSON: "
+               '{"tool": <nombre>, "arguments": {...}}.' + tools_help)
+        messages = [m for m in convo if m.get("role") != "system" or m is convo[0]]
+        messages += [{"role": "assistant", "content": narration or "Voy a hacer el cambio."}, {"role": "user", "content": ask}]
+    else:
+        schema = {"type": "object", "required": ["complete"],
+                  "properties": {"complete": {"type": "boolean"}, "missing": {"type": "string"},
+                                 "tool": {"type": "string", "enum": doing}, "arguments": {"type": "object"}}}
+        done = "; ".join(st.log[-8:]) or "(ninguna)"
+        ask = (f"Revisión final. Petición original: «{completion_of[:400]}». Acciones realizadas: {done}. "
+               "¿Quedó hecho TODO lo que se pidió? Si falta algo concreto (por ejemplo el test), responde "
+               '{"complete": false, "missing": <qué falta>, "tool": <herramienta>, "arguments": {...}} con la llamada que lo hace; '
+               'si ya está todo, {"complete": true}.' + tools_help)
+        messages = [m for m in convo if m.get("role") != "system" or m is convo[0]]
+        messages += [{"role": "assistant", "content": narration or "Terminé."}, {"role": "user", "content": ask}]
     try:
         data = json.loads(_chat_json(st.model, messages, schema, st.eff))
     except (ValueError, ConnectionError):
+        return []
+    if completion_of is not None and data.get("complete", True):
         return []
     name, args = data.get("tool"), data.get("arguments")
     if name not in doing or not isinstance(args, dict):
@@ -249,7 +273,60 @@ def _extract_calls(message: dict) -> list[dict]:
                 calls.append({"name": data.get("name"), "args": data.get("arguments") or {}})
             except ValueError:
                 continue
+    if not calls:
+        calls = _calls_from_python_syntax(message.get("content") or "")
     return calls
+
+
+_CALL_START = re.compile(r"^[ 	>*`-]*([a-z_]+)\(", re.MULTILINE)
+
+
+def _balanced_call(text: str, start: int) -> Optional[str]:
+    """Texto de la llamada `nombre(...)` que empieza en `start`, respetando comillas y parentesis anidados."""
+    depth, quote, i = 0, "", start
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif text.startswith(quote, i):
+                i += len(quote) - 1
+                quote = ""
+        elif c in "\"'":
+            quote = c * 3 if text.startswith(c * 3, i) else c
+            i += len(quote) - 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+        i += 1
+    return None
+
+
+def _calls_from_python_syntax(content: str) -> list[dict]:
+    """
+    Un modelo chico a veces escribe la llamada como texto: append_file(path="a.py", content="...").
+    Se reconoce solo si la herramienta existe y los argumentos son literales (nada se evalua).
+    """
+    calls: list[dict] = []
+    for m in _CALL_START.finditer(content):
+        name = m.group(1)
+        if name not in T.TOOLS and name not in T.EXTRA_SPECS:
+            continue
+        snippet = _balanced_call(content, m.start(1))
+        if not snippet:
+            continue
+        try:
+            node = ast.parse(snippet, mode="eval").body
+            if not isinstance(node, ast.Call) or node.args:
+                continue
+            args = {k.arg: ast.literal_eval(k.value) for k in node.keywords if k.arg}
+        except (SyntaxError, ValueError):
+            continue
+        calls.append({"name": name, "args": args})
+    return calls[:MAX_CALLS_PER_STEP]
 
 
 def _clean_args(name: str, args: dict, specs: list[dict]) -> dict:
@@ -259,7 +336,7 @@ def _clean_args(name: str, args: dict, specs: list[dict]) -> dict:
 
 def _describe(name: str, args: dict) -> str:
     icons = {"list_files": "📂", "glob": "📂", "read_file": "📖", "search_text": "🔎", "symbol_context": "🧩", "write_file": "📝",
-             "edit_file": "✏️", "append_file": "➕", "replace_in_files": "🔁", "run_command": "⚙️", "run_tests": "🧪", "todo_write": "🗒️", "ask_user": "❓",
+             "edit_file": "✏️", "append_file": "➕", "add_to_class": "🧱", "replace_in_files": "🔁", "run_command": "⚙️", "run_tests": "🧪", "todo_write": "🗒️", "ask_user": "❓",
              "explore": "🧭", "web_search": "🌐", "web_fetch": "🌐"}
     main = args.get("path") or args.get("old") or args.get("pattern") or args.get("command") or args.get("query") or args.get("url") or args.get("question") or ""
     return f"{icons.get(name, '🔧')} {name}({str(main)[:80]})"
@@ -376,6 +453,25 @@ def _read_for_preload(st: RunState, rel: str, limit: int) -> Optional[str]:
     return text[:limit] + ("\n[… recortado]" if len(text) > limit else "")
 
 
+def _test_counterparts(files: list[str], st: RunState) -> list[str]:
+    """Archivo de tests de cada modulo mencionado (tests/test_x.py, x_test.py, x.test.ts...), si existe."""
+    by_lower = {rel.lower(): rel for rel in _project_files(st)}
+    found: list[str] = []
+    for rel in files:
+        if _TEST_PATH.search(_norm(rel)):
+            continue
+        stem, _, ext = rel.rpartition("/")[2].rpartition(".")
+        folder = rel.rpartition("/")[0]
+        for cand in (f"tests/test_{stem}.{ext}", f"test/test_{stem}.{ext}", f"{folder}/tests/test_{stem}.{ext}",
+                     f"{folder}/test_{stem}.{ext}", f"{folder}/{stem}_test.{ext}", f"{folder}/{stem}.test.{ext}",
+                     f"{folder}/{stem}.spec.{ext}", f"tests/{stem}.test.{ext}", f"tests/{stem}.spec.{ext}"):
+            hit = by_lower.get(cand.lstrip("/").lower())
+            if hit and hit not in found:
+                found.append(hit)
+                break
+    return found
+
+
 def _preload(user_text: str, st: RunState) -> str:
     """
     Contexto que se entrega junto con la peticion: los archivos nombrados y, en preguntas generales,
@@ -388,6 +484,12 @@ def _preload(user_text: str, st: RunState) -> str:
         if text is not None:
             blocks.append(f"[Archivo {rel}]\n```\n{text}\n```")
             st.read_paths.add(_norm(rel))
+    if is_action(user_text) and not st.plan:
+        for rel in _test_counterparts(mentioned, st)[:2]:
+            text = _read_for_preload(st, rel, PRELOAD_FILE_CHARS)
+            if text is not None:
+                blocks.append(f"[Archivo de tests {rel} (aquí van los tests de ese módulo)]\n```\n{text}\n```")
+                st.read_paths.add(_norm(rel))
     if not mentioned and not is_action(user_text) and gating.wants_project_context(user_text):
         readme = next((f for f in _project_files(st) if f.lower() in ("readme.md", "readme.rst", "readme.txt")), None)
         text = _read_for_preload(st, readme, PRELOAD_README_CHARS) if readme else None
@@ -456,7 +558,7 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
     extra_auto = ", explore" if (eff.explore and len(_project_files(st)) >= EXPLORE_MIN_FILES) else ""
     needs = "web_search, web_fetch" if web_on else ""
     if not plan:
-        needs = "write_file, edit_file, append_file, replace_in_files, run_command, run_tests" + (", " + needs if needs else "")
+        needs = "write_file, edit_file, append_file, add_to_class, replace_in_files, run_command, run_tests" + (", " + needs if needs else "")
     ask_rule = ("- Si falta información o hay varias opciones razonables, pregunta con ask_user en vez de adivinar.\n" if plan else
                 "- Si te falta información crítica, termina tu respuesta preguntándola; en lo demás, decide tú y actúa.\n")
     system = SYSTEM.format(
@@ -481,7 +583,8 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
 
     # el explorador solo compensa en proyectos grandes; en uno chico un modelo pequeno lo usa de mas y se pierde
     big = len(_project_files(st)) >= EXPLORE_MIN_FILES
-    specs = T.specs_for(plan=plan, explore=eff.explore and big, web=web_on)
+    # una pregunta no recibe herramientas de edicion: un modelo chico las usa de mas y deja de responder
+    specs = T.specs_for(plan=plan, explore=eff.explore and big, web=web_on, edits=is_action(user_text))
     limit = max_steps or eff.max_steps
     base_convo = list(convo)
     _set_active(+1)
@@ -608,7 +711,7 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
     """Bucle de pasos. Emite eventos y devuelve (respuesta final, pasos)."""
     final = ""
     step = 0
-    nudges = {"act": 0, "repair": 0, "empty": 0, "force": 0}
+    nudges = {"act": 0, "repair": 0, "empty": 0, "force": 0, "more": 0}
     seen: dict[str, int] = {}
     budget = int(st.eff.num_ctx * 3.2 * 0.7)
 
@@ -625,14 +728,25 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
             return final, step
 
         calls = _extract_calls(message)
+        if len(calls) > MAX_CALLS_PER_STEP:
+            calls = calls[:MAX_CALLS_PER_STEP]
+            if message.get("tool_calls"):
+                message = {**message, "tool_calls": message["tool_calls"][:MAX_CALLS_PER_STEP]}
         content = (message.get("content") or "").strip()
         if (not calls and depth == 0 and not st.plan and st.approval != "readonly" and is_action(user_text)
-                and not st.edited and nudges["act"] >= 2 and nudges["force"] < 1 and step < limit):
+                and not st.edited and nudges["act"] >= FORCE_AFTER[st.eff.name] and nudges["force"] < 1 and step < limit):
             nudges["force"] += 1
             calls = _forced_calls(st, convo, specs, content)
             if calls:
                 message = {"tool_calls": [{"function": {"name": c["name"], "arguments": c["args"]}} for c in calls]}
                 yield _tag({"type": "text", "content": "El modelo describió el cambio sin aplicarlo; le pido la herramienta en formato estructurado…"}, tag)
+        if (not calls and content and depth == 0 and not st.plan and st.approval != "readonly" and is_action(user_text)
+                and st.edited and st.eff.name != "rapido" and nudges["more"] < 1 and step < limit):
+            nudges["more"] += 1
+            calls = _forced_calls(st, convo, specs, content, completion_of=user_text)
+            if calls:
+                message = {"tool_calls": [{"function": {"name": c["name"], "arguments": c["args"]}} for c in calls]}
+                yield _tag({"type": "text", "content": "Revisando que la petición esté completa: falta un paso, lo aplico…"}, tag)
         if not calls:
             if not content and nudges["empty"] < 1 and step < limit:
                 nudges["empty"] += 1
@@ -756,7 +870,7 @@ def _execute(st: RunState, specs: list[dict], name: str, args: dict, tag: Option
         yield result(True, summary)
         return {"ok": True, "output": summary}
 
-    if st.protect_tests and name in ("edit_file", "write_file", "append_file") and _TEST_PATH.search(_norm(args.get("path", "")).lower()):
+    if st.protect_tests and name in ("edit_file", "write_file", "append_file", "add_to_class") and _TEST_PATH.search(_norm(args.get("path", "")).lower()):
         msg = (f"No modifiques {args.get('path')}: los tests son la especificación. El bug está en el código fuente; "
                "lee el módulo que los tests importan y corrígelo ahí.")
         yield call_event(mutating=True, needs_approval=False, preview="")
@@ -789,11 +903,11 @@ def _execute(st: RunState, specs: list[dict], name: str, args: dict, tag: Option
             return {"ok": False, "output": f"Error: {e}"}
 
     blocked = mutating and (st.approval == "readonly" or st.plan)
-    auto_ok = mutating and st.approval == "auto_edits" and name in ("write_file", "edit_file", "append_file", "replace_in_files")
+    auto_ok = mutating and st.approval == "auto_edits" and name in ("write_file", "edit_file", "append_file", "add_to_class", "replace_in_files")
     needs_approval = (mutating or network) and not auto_ok and not blocked
 
     extra = {}
-    if name in ("write_file", "edit_file", "append_file") and not blocked:
+    if name in ("write_file", "edit_file", "append_file", "add_to_class") and not blocked:
         proposed = T.proposed_content(st.sandbox, name, args)
         if proposed:
             extra["proposed"] = proposed
@@ -832,7 +946,7 @@ def _execute(st: RunState, specs: list[dict], name: str, args: dict, tag: Option
         if name == "replace_in_files" and outcome.ok:
             st.edited.add("replace_in_files:" + str(args.get("old", "")))
             st.tests_fresh = False
-        if name in ("write_file", "edit_file", "append_file") and outcome.ok:
+        if name in ("write_file", "edit_file", "append_file", "add_to_class") and outcome.ok:
             st.edited.add(_norm(args.get("path", "")))
             st.tests_fresh = False
             if st.eff.syntax_check:

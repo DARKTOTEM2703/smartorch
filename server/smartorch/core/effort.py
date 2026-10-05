@@ -50,8 +50,8 @@ EFFORTS: dict[str, Effort] = {
                        rag_top_k=3, rag_chars=1500, max_tokens=768, full_cot=False),
     ),
     "normal": Effort(
-        name="normal", label="Normal", description="Equilibrio entre velocidad y calidad.",
-        max_steps=10, num_ctx=12288, num_predict=1024, syntax_check=True, run_tests=False, repair_attempts=0,
+        name="normal", label="Normal", description="Equilibrio: verifica con los tests y repara dos veces si fallan.",
+        max_steps=12, num_ctx=12288, num_predict=1024, syntax_check=True, run_tests=True, repair_attempts=2,
         explore=True, plan_first=False,
         chat=ChatKnobs(),
     ),

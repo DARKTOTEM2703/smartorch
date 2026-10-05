@@ -678,6 +678,33 @@ async def project_map_cancel(root: Optional[str] = None):
     return {"cancelled": event is not None}
 
 
+@app.get("/smartorch/health", dependencies=[Depends(verify_key)])
+async def project_health(root: Optional[str] = None):
+    """Salud del proyecto desde el grafo de codigo: duplicados, funciones largas, clases grandes, ciclos."""
+    from smartorch.core import codegraph, experience, projectmap
+    target = str(Path(_analysis_root(root)).resolve())
+    await asyncio.to_thread(codegraph.build, target)
+    return {
+        "graph": await asyncio.to_thread(codegraph.stats, target),
+        "smells": await asyncio.to_thread(codegraph.smells, target),
+        "map": projectmap.status(target),
+        "experiences": len(experience.listing(target, limit=500)),
+    }
+
+
+@app.get("/smartorch/experiences", dependencies=[Depends(verify_key)])
+async def experiences_list(root: Optional[str] = None):
+    from smartorch.core import experience
+    return {"experiences": experience.listing(_analysis_root(root), limit=100)}
+
+
+@app.delete("/smartorch/experiences", dependencies=[Depends(verify_key)])
+async def experiences_forget(root: Optional[str] = None, id: Optional[int] = None):
+    """Olvida una experiencia (id) o todas las de este proyecto."""
+    from smartorch.core import experience
+    return {"deleted": experience.forget(_analysis_root(root), id)}
+
+
 # ── Historial compartido (web · CLI · editor) ────────────────────────────────
 class ConversationCreate(BaseModel):
     title:     Optional[str] = ""

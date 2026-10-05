@@ -98,7 +98,12 @@ export class ProjectProvider implements vscode.TreeDataProvider<ProjectItem> {
     try {
       const q = `?root=${encodeURIComponent(workspace.fsPath)}`;
       const p: any = await (await apiFetch(`/smartorch/analysis${q}`)).json();
-      return buildNodes(p);
+      const nodes = buildNodes(p);
+      try {
+        const h: any = await (await apiFetch(`/smartorch/health${q}`)).json();
+        nodes.push(...healthNodes(h));
+      } catch { /* sin grafo todavia: el resto de la vista sigue funcionando */ }
+      return nodes;
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       if (msg.startsWith("403") || msg.startsWith("400")) {
@@ -158,6 +163,101 @@ function buildNodes(p: any): Node[] {
   return nodes;
 }
 
+function healthNodes(h: any): Node[] {
+  const s = h.smells ?? {};
+  const group = (label: string, icon: string, items: Node[]): Node[] =>
+    items.length ? [{ label, icon, description: `${items.length}`, children: items }] : [];
+  const issues: Node[] = [
+    ...group("Funciones largas o complejas", "symbol-function", (s.long_functions ?? []).map((f: any) => ({
+      label: f.qual, description: `${f.lines} líneas · complejidad ${f.complexity}`, icon: "symbol-function", file: f.file, line: f.line }))),
+    ...group("Clases con demasiadas responsabilidades", "symbol-class", (s.big_classes ?? []).map((c: any) => ({
+      label: c.qual, description: `${c.methods} métodos`, icon: "symbol-class", file: c.file, line: c.line }))),
+    ...group("Código duplicado (DRY)", "files", (s.duplicates ?? []).map((g: any[], i: number) => ({
+      label: `Grupo ${i + 1}: ${g[0][1]}`, description: `${g.length} copias`, icon: "files",
+      children: g.map((d: any[]) => ({ label: d[1], description: d[0], icon: "symbol-function", file: d[0], line: d[2] })) }))),
+    ...group("Ciclos de importación", "refresh", (s.cycles ?? []).map((c: string[]) => ({
+      label: c.join(" → "), icon: "warning", file: c[0] }))),
+  ];
+  const m = h.map ?? {};
+  const mapNode: Node = m.summarized_files
+    ? { label: "Mapa de resúmenes", icon: "book", description: `${m.summarized_files} archivos resumidos`,
+        command: { command: "smartorch.buildMap", title: "Actualizar mapa" } }
+    : { label: "Construir mapa de resúmenes", icon: "book", description: "el modelo lee cada archivo una vez",
+        command: { command: "smartorch.buildMap", title: "Construir mapa" } };
+  return [{
+    label: "Salud del proyecto", icon: "pulse",
+    description: `${h.graph?.symbols ?? 0} símbolos · ${issues.length ? issues.length + " avisos" : "sin avisos"}`,
+    children: [...issues, mapNode,
+      { label: "Experiencias aprendidas", icon: "lightbulb", description: `${h.experiences ?? 0}`,
+        command: { command: "smartorch.forgetExperiences", title: "Gestionar experiencias" } }],
+  }];
+}
+
+async function buildMap() {
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspace) {
+    void vscode.window.showWarningMessage("SmartOrch: abre una carpeta para construir su mapa.");
+    return;
+  }
+  const q = `?root=${encodeURIComponent(workspace)}`;
+  await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: "SmartOrch: construyendo el mapa del proyecto", cancellable: true },
+    async (progress, token) => {
+      try {
+        const started: any = await (await apiFetch(`/smartorch/map/build${q}`, { method: "POST" })).json();
+        if (!started.started) progress.report({ message: started.reason });
+        let last = 0;
+        while (!token.isCancellationRequested) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const st: any = await (await apiFetch(`/smartorch/map/status${q}`)).json();
+          const p = st.progress ?? {};
+          if (p.error) throw new Error(p.error);
+          if (p.total) {
+            const pct = Math.round((p.done / p.total) * 100);
+            progress.report({ message: `${p.phase}: ${p.done}/${p.total}`, increment: Math.max(0, pct - last) });
+            last = pct;
+          }
+          if (!p.running && st.summarized_files) break;
+        }
+        if (token.isCancellationRequested) {
+          await apiFetch(`/smartorch/map/cancel${q}`, { method: "POST" });
+          void vscode.window.showInformationMessage("SmartOrch: lo ya resumido queda guardado; vuelve a ejecutarlo para continuar.");
+        } else {
+          void vscode.window.showInformationMessage("SmartOrch: mapa del proyecto listo.");
+        }
+        void vscode.commands.executeCommand("smartorch.refreshViews");
+      } catch (e: any) {
+        void vscode.window.showErrorMessage(`SmartOrch: ${e.message}`);
+      }
+    },
+  );
+}
+
+async function manageExperiences() {
+  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspace) return;
+  const q = `?root=${encodeURIComponent(workspace)}`;
+  const data: any = await (await apiFetch(`/smartorch/experiences${q}`)).json();
+  const items = (data.experiences as any[]).map((e) => ({
+    label: e.task, description: `${e.kind === "lesson" ? "lección" : "receta"} · usada ${e.uses} veces`,
+    detail: `${e.files}${e.lesson ? " — " + e.lesson : ""}`, id: e.id,
+  }));
+  if (!items.length) {
+    void vscode.window.showInformationMessage("SmartOrch: aún no ha aprendido nada de este proyecto (se guarda cuando una tarea termina con los tests en verde).");
+    return;
+  }
+  const picked = await vscode.window.showQuickPick(
+    [...items, { label: "$(trash) Olvidar todo lo aprendido de este proyecto", description: "", detail: "", id: -1 }],
+    { placeHolder: "Experiencias de SmartOrch en este proyecto (elige una para olvidarla)" });
+  if (!picked) return;
+  const all = picked.id === -1;
+  const ok = await vscode.window.showWarningMessage(
+    all ? "¿Olvidar todo lo aprendido de este proyecto?" : `¿Olvidar «${picked.label}»?`, { modal: true }, "Olvidar");
+  if (ok !== "Olvidar") return;
+  await apiFetch(`/smartorch/experiences${q}${all ? "" : `&id=${picked.id}`}`, { method: "DELETE" });
+  void vscode.commands.executeCommand("smartorch.refreshViews");
+}
+
 // ── Registro ────────────────────────────────────────────────────────────────
 
 async function analyzeProject() {
@@ -194,6 +294,8 @@ export function registerTrees(context: vscode.ExtensionContext) {
       project.refresh();
     }),
     vscode.commands.registerCommand("smartorch.analyzeProject", analyzeProject),
+    vscode.commands.registerCommand("smartorch.buildMap", buildMap),
+    vscode.commands.registerCommand("smartorch.forgetExperiences", manageExperiences),
     vscode.commands.registerCommand("smartorch.renameConversation", async (item: ConversationItem) => {
       const title = await vscode.window.showInputBox({ prompt: "Nuevo título", value: item.info.title });
       if (!title?.trim()) return;

@@ -45,7 +45,7 @@ class AgentLoopTests(unittest.TestCase):
             self.addCleanup(p.stop)
         self.audit_dir = audit_dir
 
-    def play(self, replies, mode="ask", answers=(), max_steps=None, timeout=None, user="revisa esto"):
+    def play(self, replies, mode="ask", answers=(), max_steps=None, timeout=None, user="modifica esto"):
         """Corre el agente en un hilo y responde las aprobaciones pendientes con `answers`."""
         fake = FakeModel(replies)
         events: list[dict] = []
@@ -148,7 +148,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("bloqueado", res["output"])
 
     def test_unknown_tool_is_reported_and_loop_continues(self):
-        events, _ = self.play([call("formatear_disco"), final("sigo vivo")])
+        events, _ = self.play([call("formatear_disco"), final("sigo vivo")], user="explica esto")
         res = next(e for e in events if e["type"] == "tool_result")
         self.assertFalse(res["ok"])
         self.assertEqual(events[-2]["content"], "sigo vivo")
@@ -246,9 +246,9 @@ class AgentLoopTests(unittest.TestCase):
     def test_narrating_model_is_forced_into_a_structured_tool_call(self):
         reply = '{"tool": "edit_file", "arguments": {"path": "app.py", "old_text": "", "new_text": "def adios():\\n    return 1"}}'
         with mock.patch.object(loop, "_chat_json", return_value=reply) as forced:
-            events, fake = self.play([final("voy a agregarla"), final("claro, ya casi"), final("lo haré"), final("listo")],
+            events, fake = self.play([final("voy a agregarla"), final("claro, ya casi"), final("listo")],
                                      answers=[True], user="agrega una función adios a app.py")
-        forced.assert_called_once()
+        self.assertEqual(forced.call_count, 2)  # la llamada forzada y despues el juez de completitud (que aqui no ve que falte nada)
         call_ev = next(e for e in events if e["type"] == "tool_call")
         self.assertEqual(call_ev["name"], "append_file")  # edit_file sin old_text se convierte en agregar
         self.assertIn("def adios()", self.read_app())
@@ -263,6 +263,45 @@ class AgentLoopTests(unittest.TestCase):
                 events, _ = self.play([final("a"), final("b"), final("c")], user="agrega una función adios a app.py")
             self.assertTrue([e["content"] for e in events if e["type"] == "final"][0].startswith("⚠ No modifiqué ningún archivo."), bad)
             self.assertNotIn("adios", self.read_app())
+
+    def test_tool_call_written_as_python_text_is_understood_and_never_evaluated(self):
+        bs = chr(92)
+        text = ('Voy a agregarla:' + chr(10) + 'append_file(path="app.py", content="def adios():' + bs + 'n    return (1)' + bs + 'n")')
+        events, _ = self.play([final(text), final("listo")], answers=[True], user="agrega adios a app.py")
+        self.assertEqual(next(e for e in events if e["type"] == "tool_call")["name"], "append_file")
+        self.assertIn("def adios():", self.read_app())
+        evil = 'read_file(path=__import__("os").system("echo pwned"))'
+        self.assertEqual(loop._calls_from_python_syntax(evil), [])
+        self.assertEqual(loop._calls_from_python_syntax('formatear_disco(path="/")'), [])
+
+    def test_a_flood_of_tool_calls_in_one_message_is_capped(self):
+        flood = {"role": "assistant", "content": "",
+                 "tool_calls": [{"function": {"name": "list_files", "arguments": {}}} for _ in range(30)]}
+        events, fake = self.play([flood, final("ok")])
+        self.assertEqual(len([e for e in events if e["type"] == "tool_call"]), loop.MAX_CALLS_PER_STEP)
+        sent_back = [m for m in fake.received[1] if m.get("role") == "assistant" and m.get("tool_calls")][0]
+        self.assertEqual(len(sent_back["tool_calls"]), loop.MAX_CALLS_PER_STEP)
+
+    def test_completion_judge_applies_the_missing_half_of_a_two_part_request(self):
+        verdict = ('{"complete": false, "missing": "el test", "tool": "append_file", '
+                   '"arguments": {"path": "app.py", "content": "def test_hola():\\n    assert hola() == \'hola\'"}}')
+        with mock.patch.object(loop, "_chat_json", return_value=verdict) as judge:
+            events, _ = self.play([call("append_file", path="app.py", content="def adios():\n    return 1"),
+                                   final("agregué adios"), final("y también el test")],
+                                  answers=[True, True], user="agrega adios a app.py y un test")
+        self.assertEqual(judge.call_count, 1)  # el juez se consulta una sola vez por tarea
+        self.assertIn("def adios()", self.read_app())
+        self.assertIn("def test_hola()", self.read_app())
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["y también el test"])
+
+    def test_completion_judge_stays_quiet_when_everything_is_done_or_nothing_was_edited(self):
+        with mock.patch.object(loop, "_chat_json", return_value='{"complete": true}') as judge:
+            events, _ = self.play([call("append_file", path="app.py", content="def adios():\n    return 1"), final("listo")],
+                                  answers=[True], user="agrega adios a app.py")
+        self.assertEqual(judge.call_count, 1)
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["listo"])
+        with mock.patch.object(loop, "_chat_json", side_effect=AssertionError("no debia consultar")):
+            self.play([final("hace hola")], user="explica app.py")  # no es una tarea de modificar
 
     def test_forcing_is_not_used_for_questions_plan_or_readonly(self):
         with mock.patch.object(loop, "_chat_json", side_effect=AssertionError("no debia forzar")):

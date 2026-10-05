@@ -7,6 +7,7 @@ Seguridad (por diseno):
   - Leer/buscar son automaticos; escribir, editar y ejecutar comandos requieren aprobacion.
   - Hay comandos que se rechazan siempre, aunque el usuario apruebe.
 """
+import ast
 import difflib
 import fnmatch
 import json
@@ -15,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -99,7 +101,7 @@ def check_command(command: str) -> Optional[str]:
 
 def is_mutating(tool: str) -> bool:
     """Herramientas que modifican archivos o ejecutan codigo: piden aprobacion y no corren en solo lectura."""
-    return tool in ("write_file", "edit_file", "append_file", "replace_in_files", "run_command", "run_tests")
+    return tool in ("write_file", "edit_file", "append_file", "add_to_class", "replace_in_files", "run_command", "run_tests")
 
 
 def is_network(tool: str) -> bool:
@@ -189,19 +191,38 @@ def _diff(old: str, new: str, name: str) -> str:
         fromfile=f"a/{name}", tofile=f"b/{name}", n=2))
 
 
-def preview_write(sb: Sandbox, path: str, content: str) -> str:
+def _check_overwrite(p: Path, shown: str, content: str, overwrite: bool) -> None:
+    """Sobrescribir un archivo existente borrando lo que tenia es el error mas caro de un modelo chico: se pide confirmacion explicita."""
+    if overwrite or not p.is_file():
+        return
+    old = p.read_text(encoding="utf-8", errors="replace")
+    if not old.strip():
+        return
+    lost = sorted(set(_DEF.findall(old)) - set(_DEF.findall(content))) if p.suffix == ".py" else []
+    shrunk = p.suffix != ".py" and len(old) > 300 and len(content) < len(old) * 0.4
+    if lost or shrunk:
+        what = f"perdería: {', '.join(lost[:6])}" if lost else f"lo dejaría en {len(content)} de {len(old)} caracteres"
+        raise SandboxError(
+            f"write_file reemplazaría TODO {shown} y {what}. Para agregar código usa append_file o add_to_class; "
+            "para cambiar algo concreto usa edit_file. Si de verdad quieres reescribir el archivo entero, "
+            "repite con overwrite=true e incluye TODO lo que debe conservar.")
+
+
+def preview_write(sb: Sandbox, path: str, content: str, overwrite: bool = False) -> str:
     p = sb.resolve(path)
     sb.check_not_sensitive(p)
+    _check_overwrite(p, sb.rel(p), content, overwrite)
     if p.exists():
         return _truncate(_diff(p.read_text(encoding="utf-8", errors="replace"), content, sb.rel(p)) or "(sin cambios)", 6000)
     return _truncate(f"Archivo nuevo: {sb.rel(p)} ({len(content.splitlines())} lineas)\n\n{content}", 6000)
 
 
-def write_file(sb: Sandbox, path: str, content: str) -> ToolOutcome:
+def write_file(sb: Sandbox, path: str, content: str, overwrite: bool = False) -> ToolOutcome:
     p = sb.resolve(path)
     sb.check_not_sensitive(p)
     if p.is_dir():
         return ToolOutcome(False, f"'{path}' es una carpeta")
+    _check_overwrite(p, sb.rel(p), content, overwrite)
     existed = p.exists()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8", newline="")
@@ -356,6 +377,25 @@ def replace_in_files(sb: Sandbox, old: str, new: str, whole_word: bool = True, p
     return ToolOutcome(True, out + ("\n" + "\n".join(notes) if notes else "\n✔ Sintaxis válida en los archivos modificados."))
 
 
+_DEF = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(\w+)", re.MULTILINE)
+
+
+def _refuse_duplicate_append(path: str, current: str, content: str) -> None:
+    """Un modelo chico suele volver a pegar lo que ya existe. Se rechaza con una guia de como hacerlo bien."""
+    if not current.strip():
+        return
+    repeated = sorted(set(_DEF.findall(content)) & set(_DEF.findall(current)))
+    if repeated:
+        raise SandboxError(
+            f"{', '.join(repeated)} ya existe en {path}; no lo repitas. Agrega solo lo que falta. "
+            "Para cambiar algo existente usa edit_file; para añadir un método dentro de una clase "
+            "(p. ej. un test de unittest) usa add_to_class(path, class_name, content).")
+    existing = {line.strip() for line in current.splitlines() if line.strip()}
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if len(lines) >= 4 and sum(line in existing for line in lines) / len(lines) >= 0.7:
+        raise SandboxError(f"Casi todo ese contenido ya está en {path}. Agrega solo lo NUEVO, no el archivo completo otra vez.")
+
+
 def _appended(sb: Sandbox, path: str, content: str) -> tuple[Path, str, str]:
     p = sb.resolve(path)
     sb.check_not_sensitive(p)
@@ -364,6 +404,7 @@ def _appended(sb: Sandbox, path: str, content: str) -> tuple[Path, str, str]:
     if not content or not content.strip():
         raise SandboxError("content no puede estar vacío")
     current = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
+    _refuse_duplicate_append(path, current, content)
     sep = ""
     if current:
         sep = ("" if current.endswith("\n") else "\n") + ("" if current.endswith("\n\n") else "\n")
@@ -382,6 +423,50 @@ def append_file(sb: Sandbox, path: str, content: str) -> ToolOutcome:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(updated, encoding="utf-8", newline="")
     return ToolOutcome(True, f"Agregado al final de {sb.rel(p)}")
+
+
+def _into_class(sb: Sandbox, path: str, class_name: str, content: str) -> tuple[Path, str, str]:
+    """Inserta `content` al final del cuerpo de una clase Python (AST), con la sangria correcta."""
+    p = sb.resolve(path)
+    sb.check_not_sensitive(p)
+    if not p.is_file() or p.suffix != ".py":
+        raise SandboxError(f"'{path}' no es un archivo Python existente; add_to_class solo funciona con clases de Python.")
+    if not content or not content.strip():
+        raise SandboxError("content no puede estar vacío")
+    current = p.read_text(encoding="utf-8", errors="replace")
+    try:
+        tree = ast.parse(current)
+    except SyntaxError as e:
+        raise SandboxError(f"{path} tiene un error de sintaxis y no se puede analizar: {e}") from e
+    classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name.strip()]
+    if not classes:
+        known = ", ".join(n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)) or "ninguna"
+        raise SandboxError(f"No hay una clase «{class_name}» en {path}. Clases que sí hay: {known}.")
+    cls = classes[0]
+    existing = {n.name for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    clash = sorted(existing & set(_DEF.findall(content)))
+    if clash:
+        raise SandboxError(f"{', '.join(clash)} ya existe en la clase {class_name}; usa edit_file para cambiarlo o elige otro nombre.")
+    indent = " " * (cls.body[0].col_offset if cls.body else cls.col_offset + 4)
+    block = textwrap.indent(textwrap.dedent(content).strip("\n"), indent)
+    lines = current.splitlines(keepends=True)
+    end = cls.end_lineno or cls.lineno
+    head, tail = "".join(lines[:end]), "".join(lines[end:])
+    if head and not head.endswith("\n"):
+        head += "\n"
+    return p, current, head + "\n" + block + "\n" + tail
+
+
+def preview_add_to_class(sb: Sandbox, path: str, class_name: str, content: str) -> str:
+    p, current, updated = _into_class(sb, path, class_name, content)
+    return _truncate(_diff(current, updated, sb.rel(p)), 6000)
+
+
+def add_to_class(sb: Sandbox, path: str, class_name: str, content: str) -> ToolOutcome:
+    """Agrega un metodo (p. ej. un test de unittest) dentro de una clase existente, sin old_text."""
+    p, _, updated = _into_class(sb, path, class_name, content)
+    p.write_text(updated, encoding="utf-8", newline="")
+    return ToolOutcome(True, f"Agregado a la clase {class_name} en {sb.rel(p)}")
 
 
 def run_command(sb: Sandbox, command: str, timeout: int = 60) -> ToolOutcome:
@@ -498,10 +583,13 @@ def proposed_content(sb: Sandbox, name: str, args: dict) -> Optional[dict]:
         if name == "write_file":
             content = args.get("content", "")
             path = sb.resolve(args.get("path", ""))
+            _check_overwrite(path, sb.rel(path), content, bool(args.get("overwrite")))
         elif name == "edit_file":
             path, _, content = _edited(sb, args.get("path", ""), args.get("old_text", ""), args.get("new_text", ""))
         elif name == "append_file":
             path, _, content = _appended(sb, args.get("path", ""), args.get("content", ""))
+        elif name == "add_to_class":
+            path, _, content = _into_class(sb, args.get("path", ""), args.get("class_name", ""), args.get("content", ""))
         else:
             return None
     except (SandboxError, OSError):
@@ -525,8 +613,9 @@ TOOL_SPECS = [
           {"path": {"type": "string"}, "start_line": {"type": "integer"}, "end_line": {"type": "integer"}}, ["path"]),
     _spec("search_text", "Busca texto o una expresion regular en el proyecto.",
           {"pattern": {"type": "string"}, "path": {"type": "string"}}, ["pattern"]),
-    _spec("write_file", "Crea o sobrescribe un archivo completo. Requiere aprobacion del usuario.",
-          {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    _spec("write_file", "Crea un archivo nuevo o reescribe uno completo (NO para agregar código a uno existente: usa append_file). Requiere aprobacion del usuario.",
+          {"path": {"type": "string"}, "content": {"type": "string"},
+           "overwrite": {"type": "boolean", "description": "true solo si quieres reemplazar TODO el archivo existente"}}, ["path", "content"]),
     _spec("edit_file", "Reemplaza un fragmento exacto y unico de un archivo. Requiere aprobacion del usuario.",
           {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
           ["path", "old_text", "new_text"]),
@@ -540,6 +629,10 @@ EXTRA_SPECS = {
                             {"name": {"type": "string", "description": "p. ej. 'calc_total' o 'Cart.add'"}}, ["name"]),
     "glob": _spec("glob", "Busca archivos por patron de nombre (por ejemplo '*.py' o 'src/**/*.ts').",
                   {"pattern": {"type": "string"}}, ["pattern"]),
+    "add_to_class": _spec("add_to_class",
+                          "Agrega un método DENTRO de una clase Python existente, con la sangría correcta (p. ej. un nuevo test en una clase unittest.TestCase). No necesitas old_text. Requiere aprobación.",
+                          {"path": {"type": "string"}, "class_name": {"type": "string"}, "content": {"type": "string", "description": "el método completo, empezando por def"}},
+                          ["path", "class_name", "content"]),
     "append_file": _spec("append_file",
                          "Agrega código al FINAL de un archivo existente (o lo crea). Úsalo para añadir una función o un test nuevo: no necesitas old_text. Requiere aprobación.",
                          {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
@@ -563,15 +656,15 @@ EXTRA_SPECS = {
 }
 
 READ_TOOLS = ["list_files", "glob", "read_file", "search_text", "symbol_context", "todo_write"]
-EDIT_TOOLS = ["write_file", "edit_file", "append_file", "replace_in_files", "run_command", "run_tests"]
+EDIT_TOOLS = ["write_file", "edit_file", "append_file", "add_to_class", "replace_in_files", "run_command", "run_tests"]
 
 
-def specs_for(plan: bool = False, explore: bool = False, web: bool = False) -> list[dict]:
+def specs_for(plan: bool = False, explore: bool = False, web: bool = False, edits: bool = True) -> list[dict]:
     """Herramientas ofrecidas al modelo segun el modo (plan = solo investigar), esfuerzo y si hay web."""
     by_name = {s["function"]["name"]: s for s in TOOL_SPECS}
     by_name.update(EXTRA_SPECS)
     # ask_user solo en modo plan: en modo agente un modelo chico lo usa para esquivar el trabajo
-    names = list(READ_TOOLS) + (["ask_user"] if plan else EDIT_TOOLS)
+    names = list(READ_TOOLS) + (["ask_user"] if plan else (EDIT_TOOLS if edits else []))
     if explore:
         names.append("explore")
     if web:
@@ -602,14 +695,14 @@ TOOLS = {
     "symbol_context": symbol_context,
     "list_files": list_files, "read_file": read_file, "search_text": search_text,
     "write_file": write_file, "edit_file": edit_file, "run_command": run_command,
-    "glob": glob_files, "run_tests": run_tests, "replace_in_files": replace_in_files, "append_file": append_file,
+    "glob": glob_files, "run_tests": run_tests, "replace_in_files": replace_in_files, "append_file": append_file, "add_to_class": add_to_class,
 }
 
 
 def preview(sb: Sandbox, name: str, args: dict) -> str:
     """Texto para mostrar al usuario antes de aprobar (diff o comando)."""
     if name == "write_file":
-        return preview_write(sb, args.get("path", ""), args.get("content", ""))
+        return preview_write(sb, args.get("path", ""), args.get("content", ""), bool(args.get("overwrite")))
     if name == "edit_file":
         return preview_edit(sb, args.get("path", ""), args.get("old_text", ""), args.get("new_text", ""))
     if name == "run_command":
@@ -618,6 +711,8 @@ def preview(sb: Sandbox, name: str, args: dict) -> str:
         return preview_tests(sb)
     if name == "append_file":
         return preview_append(sb, args.get("path", ""), args.get("content", ""))
+    if name == "add_to_class":
+        return preview_add_to_class(sb, args.get("path", ""), args.get("class_name", ""), args.get("content", ""))
     if name == "replace_in_files":
         return preview_replace(sb, str(args.get("old", "")), str(args.get("new", "")),
                                bool(args.get("whole_word", True)), str(args.get("path", ".") or "."))

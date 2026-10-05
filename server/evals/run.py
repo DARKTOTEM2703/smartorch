@@ -39,7 +39,7 @@ def write_fixture(name: str) -> Path:
 
 
 def tests_pass(root: Path) -> bool:
-    r = subprocess.run([sys.executable, "-B", "-m", "unittest", "discover", "-q"], cwd=root, capture_output=True, text=True, timeout=60)
+    r = subprocess.run([sys.executable, "-B", "-m", "unittest", "discover", "-q"], cwd=root, capture_output=True, text=True, timeout=240)
     return r.returncode == 0
 
 
@@ -60,7 +60,8 @@ def check_add_function(root, final):
     ns: dict = {}
     try:
         exec(read(root, "calc.py"), ns)
-        return ns["power"](2, 3) == 8 and tests_pass(root)
+        has_test = any("power" in read(root, rel) for rel in ("tests/test_calc.py", "tests/test_power.py"))
+        return ns["power"](2, 3) == 8 and has_test and tests_pass(root)
     except Exception:
         return False
 
@@ -85,7 +86,7 @@ def check_new_file(root, final):
 
 TASKS = [
     ("fix_divide", "calc", "Los tests de este proyecto fallan. Encuentra el bug y arréglalo.", check_fix_divide),
-    ("add_function", "calc", "Agrega a calc.py una función power(a, b) que devuelva a elevado a b, y un test para ella.", check_add_function),
+    ("add_function", "calc_ok", "Agrega a calc.py una función power(a, b) que devuelva a elevado a b, y un test para ella.", check_add_function),
     ("find_symbol", "shop", "¿En qué archivo se aplica el descuento y cómo se llama la función?", check_find_symbol),
     ("rename", "shop", "Renombra la función calc_total a compute_total en todo el proyecto, incluidos los tests, sin romper nada.", check_rename),
     ("explain", "shop", "Explícame qué hace este proyecto.", check_explain),
@@ -133,6 +134,11 @@ def main():
     parser.add_argument("--model", default=None, help="modelo del agente (por defecto el configurado)")
     args = parser.parse_args()
 
+    # el banco de pruebas no debe escribir experiencias ni grafos en los datos reales del usuario
+    import tempfile
+    from smartorch.core import datadir
+    datadir.DATA_DIR = tempfile.mkdtemp(prefix="so-eval-data-")
+
     results = []
     for task_id, fixture, prompt, check in TASKS:
         if task_id not in args.task:
@@ -149,6 +155,14 @@ def main():
         rs = [r for r in results if r["effort"] == effort]
         if rs:
             print(f"{effort:8s} {sum(r['ok'] for r in rs):>4d}/{len(rs):<3d} {sum(r['seconds'] for r in rs)/len(rs):>12.1f}s {sum(r['steps'] for r in rs)/len(rs):>13.1f}")
+
+    print("\nPor tarea (aciertos/intentos)")
+    for task_id in args.task:
+        cells = []
+        for effort in args.effort:
+            rs = [r for r in results if r["task"] == task_id and r["effort"] == effort]
+            cells.append(f"{effort}={sum(r['ok'] for r in rs)}/{len(rs)}")
+        print(f"  {task_id:13s} " + "  ".join(cells))
 
     out = HERE / "results"
     out.mkdir(exist_ok=True)

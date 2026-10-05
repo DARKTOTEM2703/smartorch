@@ -29,4 +29,8 @@ SHOP = {
     "README.md": "# Shop\nUna tienda en línea mínima: carrito de compras, precios con impuestos y descuentos.\n",
 }
 
-FIXTURES = {"calc": CALC, "shop": SHOP}
+# igual que CALC pero sin el bug: para medir "agregar una funcion" sin mezclarlo con "arreglar un bug"
+CALC_OK = {**CALC, "calc.py": CALC["calc.py"].replace("    # BUG: deberia dividir\n    return a * b\n", "    return a / b\n"),
+           "SMARTORCH.md": "Convenciones: los tests viven en tests/test_<modulo>.py y usan unittest (clases TestCase).\n"}
+
+FIXTURES = {"calc": CALC, "calc_ok": CALC_OK, "shop": SHOP}
