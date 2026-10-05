@@ -32,7 +32,7 @@ from typing import Iterator, Optional
 from smartorch.agent import tools as T
 from smartorch.agent import web as W
 from smartorch.config import MODELS, OLLAMA_URL
-from smartorch.core import analysis, datadir, effort as effort_mod, gating, projectmap
+from smartorch.core import analysis, datadir, effort as effort_mod, experience, gating, projectmap
 
 APPROVAL_TIMEOUT = int(os.environ.get("AGENT_APPROVAL_TIMEOUT", "300"))
 MODES = ("ask", "auto_edits", "readonly")
@@ -134,6 +134,7 @@ class RunState:
     edited: set = field(default_factory=set)
     protect_tests: bool = False
     tests_fresh: bool = False
+    first_failure: str = ""
     last_tests_ok: Optional[bool] = None
     repairs: int = 0
     listing: dict = field(default_factory=dict)
@@ -416,6 +417,10 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
     convo += [{"role": m["role"], "content": m["content"]} for m in messages if m.get("role") != "system"]
     user_text = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     preload = _preload(user_text, st)
+    if not plan and is_action(user_text):
+        remembered = experience.render(_safe(experience.recall, str(root), user_text) or [])
+        if remembered:
+            preload = (preload + "\n\n" if preload else "") + remembered
     if preload and convo[-1]["role"] == "user":
         convo[-1] = {**convo[-1], "content": convo[-1]["content"] + "\n\n" + preload}
 
@@ -426,10 +431,51 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
     big = len(_project_files(st)) >= EXPLORE_MIN_FILES
     specs = T.specs_for(plan=plan, explore=eff.explore and big, web=web_on)
     limit = max_steps or eff.max_steps
-    final, steps = yield from _loop(convo, st, specs, user_text, limit, tag=None, depth=0)
+    _set_active(+1)
+    try:
+        final, steps = yield from _loop(convo, st, specs, user_text, limit, tag=None, depth=0)
+    finally:
+        _set_active(-1)
 
+    learned = _learn(st, user_text, final)
     yield {"type": "done", "steps": steps, "model": model, "elapsed": round(time.time() - started, 1),
-           "tool_log": st.log, "final": final, "plan": plan, "effort": eff.name}
+           "tool_log": st.log, "final": final, "plan": plan, "effort": eff.name, "learned": learned}
+
+
+def _safe(fn, *args):
+    """La memoria nunca debe tumbar una tarea: si falla, se sigue sin ella."""
+    try:
+        return fn(*args)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _learn(st: "RunState", user_text: str, final: str) -> bool:
+    """Guarda la tarea como experiencia SOLO si se edito y los tests (corridos por el bucle o el modelo) pasaron."""
+    if st.plan or not st.edited or st.last_tests_ok is not True or st.approval == "readonly":
+        return False
+    files = sorted(e for e in st.edited if not e.startswith("replace_in_files:"))
+    if not files:
+        return False
+    lesson = ""
+    if st.first_failure:
+        lesson = f"los tests fallaron con «{st.first_failure[:200]}» y se resolvió editando {', '.join(files[:4])}."
+    return bool(_safe(experience.record, str(st.root), user_text, files, final or "", lesson))
+
+
+_active_runs = 0
+_active_lock = threading.Lock()
+
+
+def _set_active(delta: int) -> None:
+    global _active_runs
+    with _active_lock:
+        _active_runs = max(0, _active_runs + delta)
+
+
+def busy() -> bool:
+    """Hay un agente trabajando: las tareas de fondo (resumir con el modelo) esperan para no competir por la GPU."""
+    return _active_runs > 0
 
 
 def _tag(event: dict, tag: Optional[str]) -> dict:
@@ -665,6 +711,8 @@ def _execute(st: RunState, specs: list[dict], name: str, args: dict, tag: Option
         elif name == "run_tests":
             st.tests_fresh = True
             st.last_tests_ok = outcome.ok
+            if not outcome.ok and not st.first_failure:
+                st.first_failure = " ".join(outcome.output.split())[:300]
     yield result(outcome.ok, outcome.output)
     return {"ok": outcome.ok, "output": outcome.output}
 

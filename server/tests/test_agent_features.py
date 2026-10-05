@@ -239,6 +239,39 @@ class AgentFeatureTests(unittest.TestCase):
         final_text = self.of(events, "final")[-1]["content"]
         self.assertTrue(final_text.startswith("⚠ Los tests siguen fallando."))
 
+    def test_verified_task_is_learned_with_the_failure_that_preceded_it(self):
+        from smartorch.core import experience
+        self._project_with_failing_tests()
+        events, _ = self.play([
+            call("edit_file", path="calc.py", old_text="a * b", new_text="a - b"),
+            final("hecho"),
+            call("edit_file", path="calc.py", old_text="a - b", new_text="a / b"),
+            final("arreglado"),
+        ], answers=[True] * 4, effort="maximo", user="arregla el bug de calc.py")
+        self.assertTrue(self.of(events, "done")[0]["learned"])
+        saved = experience.listing(self.root)
+        self.assertEqual((len(saved), saved[0]["kind"], saved[0]["files"]), (1, "lesson", "calc.py"))
+        self.assertIn("TESTS FALLARON", saved[0]["lesson"])
+
+    def test_unverified_or_failed_tasks_are_not_learned(self):
+        from smartorch.core import experience
+        self._project_with_failing_tests()
+        events, _ = self.play([call("edit_file", path="calc.py", old_text="a * b", new_text="a - b"), final("hecho")],
+                              answers=[True], effort="normal", user="arregla el bug de calc.py")  # sin tests: no se verifico
+        self.assertFalse(self.of(events, "done")[0]["learned"])
+        self.assertEqual(experience.listing(self.root), [])
+
+    def test_similar_task_receives_the_remembered_experience(self):
+        from smartorch.core import experience
+        self._project_with_failing_tests()
+        experience.record(self.root, "arregla el bug de division en calc.py", ["calc.py"], "cambié a / b")
+        _, fake = self.play([final("ok")], user="corrige el bug de division en calc.py", effort="normal")
+        first_user = fake.received[0][-1]["content"]
+        self.assertIn("Experiencias previas", first_user)
+        self.assertIn("calc.py", first_user)
+        _, fake = self.play([final("ok")], user="explica calc.py")  # no es una tarea de modificar: no se inyecta
+        self.assertNotIn("Experiencias previas", fake.received[0][-1]["content"])
+
     def test_run_tests_is_denied_in_readonly_and_plan(self):
         self._project_with_failing_tests()
         events, _ = self.play([call("run_tests"), final()], approval="readonly")

@@ -26,6 +26,7 @@ class WorkspaceWatcher:
         self._thread: threading.Thread | None = None
         self._pending_reindex = False
         self._last_change = 0.0
+        self._pending_map = False
 
     def _scan(self) -> dict[str, float]:
         """Toma snapshot de mtimes de todos los archivos relevantes."""
@@ -76,6 +77,28 @@ class WorkspaceWatcher:
         except Exception as e:
             logger.warning(f"[WATCHER] RAG semántico no actualizado: {e}")
 
+        # grafo de codigo (AST, rapido e incremental) y, si ya existe, el mapa de resumenes (usa el modelo)
+        try:
+            from smartorch.core import codegraph
+            codegraph.build(self.root)
+        except Exception as e:
+            logger.warning(f"[WATCHER] grafo de código no actualizado: {e}")
+        self._refresh_map()
+
+    def _refresh_map(self):
+        try:
+            from smartorch.core import projectmap
+            from smartorch.agent import loop
+            if not projectmap.load(os.path.abspath(self.root))["files"]:
+                return  # el usuario nunca construyo el mapa: no se gasta el modelo sin que lo pida
+            if loop.busy():
+                self._pending_map = True  # se reintenta cuando el agente termine
+                return
+            self._pending_map = False
+            projectmap.build(self.root)
+        except Exception as e:
+            logger.warning(f"[WATCHER] mapa no actualizado: {e}")
+
     def _loop(self):
         logger.info(f"[WATCHER] Monitoreando: {self.root}")
         self._snapshots = self._scan()
@@ -90,6 +113,9 @@ class WorkspaceWatcher:
                 self._last_change = time.time()
                 self._pending_reindex = True
                 logger.info(f"[WATCHER] {len(changed)} archivo(s) cambiado(s)")
+
+            if self._pending_map and not self._pending_reindex:
+                self._refresh_map()
 
             # Reindexar después del debounce (N segundos sin cambios)
             if self._pending_reindex and (time.time() - self._last_change) >= DEBOUNCE:
