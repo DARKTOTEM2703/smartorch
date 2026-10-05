@@ -201,8 +201,8 @@ class AgentLoopTests(unittest.TestCase):
                                  user="agrega una función de despedida")
         nudge = fake.received[1][-1]
         self.assertEqual(nudge["role"], "user")
-        self.assertIn("decide y actúa", nudge["content"])
-        self.assertIn("replace_in_files", nudge["content"])
+        self.assertIn("ejecútalo con una herramienta", nudge["content"])
+        self.assertIn("append_file", nudge["content"])
         final_text = [e["content"] for e in events if e["type"] == "final"][0]
         self.assertTrue(final_text.startswith("⚠ No modifiqué ningún archivo."))
         self.assertEqual(len(fake.received), 3)  # dos empujones y se acepta la respuesta, con la advertencia

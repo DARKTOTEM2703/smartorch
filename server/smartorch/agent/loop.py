@@ -469,7 +469,7 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
                 if is_action(user_text) and not st.edited and nudges["act"] < 2 and step < limit:
                     nudges["act"] += 1
                     convo.append({"role": "assistant", "content": content})
-                    convo.append({"role": "user", "content": "No pidas confirmación ni te disculpes: decide y actúa. Usa search_text para localizar el código y edit_file (o replace_in_files para renombrar en varios archivos) para cambiarlo."})
+                    convo.append({"role": "user", "content": _act_nudge(user_text, st)})
                     yield _tag({"type": "text", "content": "Aplicando el cambio…"}, tag)
                     continue
                 # esfuerzo maximo: verificar con los tests, que los corre el propio bucle
@@ -688,6 +688,18 @@ def _read_before_edit(st: RunState, path: str) -> Optional[str]:
     numbered = "\n".join(f"{n}: {line}" for n, line in enumerate(text.splitlines(), start=1))
     return (f"Antes de editar {path} necesitas ver su contenido real. Aquí está; copia el texto exacto (sin los números de línea) "
             f"y vuelve a llamar a edit_file:\n{numbered}")
+
+
+def _act_nudge(user_text: str, st: RunState) -> str:
+    """Empujon concreto: nombra el archivo y la herramienta exacta, un 8B no infiere eso de un regaño."""
+    files = _mentioned_files(user_text, st)
+    target = files[0] if files else "el archivo correspondiente"
+    adds = bool(re.search(r"agreg|anad|crea|add|implement|escrib", _plain(user_text).lower()))
+    how = (f"Llama AHORA a append_file(path=\"{target}\", content=<el código nuevo>) para agregar código nuevo; "
+           "usa edit_file solo para cambiar código que ya existe." if adds else
+           f"Llama AHORA a edit_file(path, old_text, new_text) con el texto exacto que viste en {target}; "
+           "para renombrar en varios archivos usa replace_in_files.")
+    return "No describas lo que vas a hacer ni pidas confirmación: ejecútalo con una herramienta. " + how
 
 
 def _usage(name: str, specs: list[dict]) -> str:
