@@ -28,6 +28,12 @@ import argparse
 import subprocess
 import threading
 
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # ── Constantes ───────────────────────────────────────────────────────────────
 
 SERVER_URL   = os.environ.get("SMARTORCH_URL", "http://localhost:8080")
@@ -591,6 +597,10 @@ def _cmd_serve():
     if not os.path.isfile(run_py):
         print(_c(C.RED, f"  No se encontró {run_py}"))
         sys.exit(1)
+    if _server_alive():
+        print(_c(C.GREEN + C.BOLD, "  SmartOrch ya está corriendo ✔"))
+        print(_c(C.GRAY, f"  URL: {SERVER_URL}  (usa 'smartorch' para chatear aquí en la terminal)"))
+        return
     print(_c(C.CYAN + C.BOLD, "  Iniciando SmartOrch Server..."))
     print(_c(C.GRAY, f"  Directorio: {SERVER_DIR}"))
     print(_c(C.GRAY, f"  URL:        http://localhost:8080"))

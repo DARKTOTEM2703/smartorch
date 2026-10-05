@@ -51,7 +51,7 @@ SPECULATIVE_ENABLED  = os.environ.get("SPECULATIVE", "true").lower() == "true"
 SPECULATIVE_MIN_TOKENS = int(os.environ.get("SPECULATIVE_MIN_TOKENS", "300"))
 
 # ── Servidor ──────────────────────────────────────────
-HOST       = os.environ.get("SMARTORCH_HOST", "0.0.0.0")
+HOST       = os.environ.get("SMARTORCH_HOST", "127.0.0.1")  # solo local; Docker/remoto lo cambian con SMARTORCH_HOST
 PORT       = int(os.environ.get("SMARTORCH_PORT", "8080"))
 API_KEY    = os.environ.get("SMARTORCH_API_KEY", "smartorch-local-key")
 DEBUG      = os.environ.get("SMARTORCH_DEBUG", "false").lower() == "true"
