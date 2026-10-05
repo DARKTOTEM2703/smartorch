@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartOrch</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='14'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar" id="sidebar" aria-label="Conversaciones">
+    <div class="side-head">
+      <div class="brand"><span class="bolt">⚡</span> SmartOrch</div>
+      <button class="btn primary" id="newChat" title="Nueva conversación (Ctrl+K)">+ Nueva</button>
+    </div>
+    <input class="search" id="search" type="search" placeholder="Buscar en el historial…" aria-label="Buscar conversaciones">
+    <div class="conv-list" id="convList" role="list"></div>
+    <div class="side-foot">
+      <span class="status" id="status"><i class="dot"></i><span id="statusText">Conectando…</span></span>
+      <button class="icon-btn" id="themeBtn" title="Cambiar tema" aria-label="Cambiar tema">◐</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="top">
+      <button class="icon-btn only-mobile" id="menuBtn" aria-label="Menú">☰</button>
+      <div class="top-title" id="topTitle">Nueva conversación</div>
+      <div class="top-actions">
+        <span class="chip" id="sourceChip" hidden></span>
+        <button class="btn" id="vscodeBtn" title="Abrir esta conversación en VS Code" hidden>Abrir en VS Code</button>
+        <button class="btn" id="copyMdBtn" title="Copiar la conversación como Markdown" hidden>Copiar MD</button>
+      </div>
+    </header>
+
+    <div class="pipeline" id="pipeline" hidden>
+      <span data-step="router">Router</span><span data-step="rag">RAG</span><span data-step="cot">CoT</span>
+      <span data-step="thinking">Pensando</span><span data-step="llm">LLM</span>
+    </div>
+
+    <section class="messages" id="messages" aria-live="polite">
+      <div class="empty" id="empty">
+        <div class="empty-bolt">⚡</div>
+        <h1>¿En qué trabajamos hoy?</h1>
+        <p>IA local con RAG sobre tu proyecto. Tus conversaciones se comparten con la terminal y VS Code.</p>
+        <div class="starters" id="starters"></div>
+      </div>
+    </section>
+
+    <footer class="composer">
+      <div class="slash-menu" id="slashMenu" hidden></div>
+      <div class="box">
+        <textarea id="input" rows="1" placeholder="Escribe un mensaje o / para comandos…  (Enter envía · Shift+Enter nueva línea)" aria-label="Mensaje"></textarea>
+        <button class="btn primary send" id="sendBtn">Enviar</button>
+        <button class="btn danger send" id="stopBtn" hidden>Detener</button>
+      </div>
+      <div class="foot-note">
+        <span>Modelos locales · Privado · Sin límites</span>
+        <a id="donate" href="#" target="_blank" rel="noopener" hidden>♥ Apoyar el proyecto</a>
+      </div>
+    </footer>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

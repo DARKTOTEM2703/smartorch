@@ -28,4 +28,4 @@ where = ["."]
 include = ["smartorch*"]
 
 [tool.setuptools.package-data]
-smartorch = ["py.typed"]
+smartorch = ["py.typed", "ui/static/*"]

@@ -9,6 +9,7 @@ Endpoints:
   GET  /smartorch/status       → estado interno detallado
   POST /smartorch/index        → indexar/reindexar directorio
 """
+import os
 import time
 import uuid
 import logging
@@ -16,7 +17,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
@@ -24,7 +26,6 @@ import asyncio
 from smartorch.config import HOST, PORT, API_KEY, MODELS, AGENT_WORK_DIR, model_context_window
 from smartorch.core import ollama_client as ollama, indexer
 from smartorch.core import orchestrator, history, gating
-from smartorch.ui.web import HTML
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +87,17 @@ def _try_load_rag():
 
 app = FastAPI(title="SmartOrch", version="2.0.0", lifespan=lifespan)
 
+# Solo la propia web local y los paneles de VS Code pueden llamar a la API desde un navegador;
+# una pagina cualquiera no debe poder leer el historial con la key por defecto.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?|vscode-webview://.*)$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui", "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
@@ -148,9 +154,21 @@ class IndexRequest(BaseModel):
 
 
 # ── Rutas básicas ─────────────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/", include_in_schema=False)
 async def web_ui():
-    return HTML
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"), headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/smartorch/ui-config", include_in_schema=False)
+async def ui_config(request: Request):
+    """Config de la web local. La key solo se entrega a clientes en la misma maquina."""
+    local = (request.client.host if request.client else "") in ("127.0.0.1", "::1", "localhost")
+    return {
+        "api_key":    API_KEY if local else "",
+        "auth":       bool(API_KEY),
+        "donate_url": os.environ.get("SMARTORCH_DONATE_URL", "https://github.com/DARKTOTEM2703/smartorch"),
+        "version":    "2.0.0",
+    }
 
 
 @app.get("/smartorch/dashboard", response_class=HTMLResponse, include_in_schema=False)
