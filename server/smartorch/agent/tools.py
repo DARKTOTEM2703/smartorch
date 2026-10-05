@@ -535,6 +535,9 @@ TOOL_SPECS = [
 ]
 
 EXTRA_SPECS = {
+    "symbol_context": _spec("symbol_context",
+                            "Dado el nombre de una función, método o clase, devuelve SOLO su código con números de línea, quién la llama y a quién llama. Úsalo antes de leer archivos enteros.",
+                            {"name": {"type": "string", "description": "p. ej. 'calc_total' o 'Cart.add'"}}, ["name"]),
     "glob": _spec("glob", "Busca archivos por patron de nombre (por ejemplo '*.py' o 'src/**/*.ts').",
                   {"pattern": {"type": "string"}}, ["pattern"]),
     "append_file": _spec("append_file",
@@ -559,7 +562,7 @@ EXTRA_SPECS = {
                        {"url": {"type": "string"}}, ["url"]),
 }
 
-READ_TOOLS = ["list_files", "glob", "read_file", "search_text", "todo_write"]
+READ_TOOLS = ["list_files", "glob", "read_file", "search_text", "symbol_context", "todo_write"]
 EDIT_TOOLS = ["write_file", "edit_file", "append_file", "replace_in_files", "run_command", "run_tests"]
 
 
@@ -576,7 +579,27 @@ def specs_for(plan: bool = False, explore: bool = False, web: bool = False) -> l
     return [by_name[n] for n in names]
 
 
+_graph_built: dict[str, float] = {}
+GRAPH_REFRESH_SECONDS = 20
+
+
+def symbol_context(sb: Sandbox, name: str) -> ToolOutcome:
+    """Codigo de un simbolo y sus vecinos, desde el grafo (se actualiza solo, es incremental)."""
+    import time
+    from smartorch.core import codegraph
+    name = (name or "").strip()
+    if not name:
+        raise SandboxError("name no puede estar vacío")
+    root = str(sb.root)
+    if time.time() - _graph_built.get(root, 0) > GRAPH_REFRESH_SECONDS:
+        codegraph.build(root)
+        _graph_built[root] = time.time()
+    text = codegraph.slice_for(root, name)
+    return ToolOutcome(not text.startswith("No hay ningún símbolo"), text)
+
+
 TOOLS = {
+    "symbol_context": symbol_context,
     "list_files": list_files, "read_file": read_file, "search_text": search_text,
     "write_file": write_file, "edit_file": edit_file, "run_command": run_command,
     "glob": glob_files, "run_tests": run_tests, "replace_in_files": replace_in_files, "append_file": append_file,
