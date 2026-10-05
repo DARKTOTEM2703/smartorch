@@ -2,7 +2,7 @@
   "name": "smartorch",
   "displayName": "SmartOrch — Local AI",
   "description": "Asistente de IA local con RAG automático. Modelos pequeños, inteligencia grande. Sin pagar.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "jafeth",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["AI", "Programming Languages", "Other"],
@@ -14,11 +14,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/jafethgamboa/smartorch"
+    "url": "https://github.com/DARKTOTEM2703/smartorch"
   },
-  "homepage": "https://github.com/jafethgamboa/smartorch#readme",
+  "homepage": "https://github.com/DARKTOTEM2703/smartorch#readme",
   "bugs": {
-    "url": "https://github.com/jafethgamboa/smartorch/issues"
+    "url": "https://github.com/DARKTOTEM2703/smartorch/issues"
   },
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
@@ -49,8 +49,8 @@
     ],
     "commands": [
       { "command": "smartorch.openChat",       "title": "SmartOrch: Abrir Chat",              "icon": "media/icons/smartorch-activity.svg" },
-      { "command": "smartorch.explainCode",    "title": "SmartOrch: /explain — Explicar código" },
-      { "command": "smartorch.fixCode",        "title": "SmartOrch: /fix — Corregir bugs" },
+      { "command": "smartorch.explain",    "title": "SmartOrch: /explain — Explicar código" },
+      { "command": "smartorch.fix",        "title": "SmartOrch: /fix — Corregir bugs" },
       { "command": "smartorch.refactor",       "title": "SmartOrch: /refactor — Refactorizar" },
       { "command": "smartorch.solid",          "title": "SmartOrch: /solid — Aplicar SOLID/DRY" },
       { "command": "smartorch.review",         "title": "SmartOrch: /review — Code review" },
@@ -87,8 +87,8 @@
         { "command": "smartorch.refactor",    "group": "1_clean@2", "when": "editorHasSelection" },
         { "command": "smartorch.review",      "group": "1_clean@3", "when": "editorHasSelection" },
         { "command": "smartorch.test",        "group": "1_clean@4", "when": "editorHasSelection" },
-        { "command": "smartorch.explainCode", "group": "1_clean@5", "when": "editorHasSelection" },
-        { "command": "smartorch.fixCode",     "group": "1_clean@6", "when": "editorHasSelection" },
+        { "command": "smartorch.explain", "group": "1_clean@5", "when": "editorHasSelection" },
+        { "command": "smartorch.fix",     "group": "1_clean@6", "when": "editorHasSelection" },
         { "command": "smartorch.docstring",   "group": "1_clean@7", "when": "editorHasSelection" },
         { "command": "smartorch.optimize",    "group": "1_clean@8", "when": "editorHasSelection" },
         { "command": "smartorch.yara",        "group": "2_sec@1",   "when": "editorHasSelection" },
@@ -152,7 +152,7 @@
     },
     "keybindings": [
       { "command": "smartorch.openChat",    "key": "ctrl+shift+l", "mac": "cmd+shift+l" },
-      { "command": "smartorch.explainCode", "key": "ctrl+shift+e", "mac": "cmd+shift+e", "when": "editorHasSelection" },
+      { "command": "smartorch.explain", "key": "ctrl+shift+e", "mac": "cmd+shift+e", "when": "editorHasSelection" },
       { "command": "smartorch.solid",       "key": "ctrl+shift+s ctrl+shift+o", "mac": "cmd+shift+s cmd+shift+o", "when": "editorHasSelection" },
       { "command": "smartorch.review",      "key": "ctrl+shift+r", "mac": "cmd+shift+r", "when": "editorHasSelection" }
     ]
