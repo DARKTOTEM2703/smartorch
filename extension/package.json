@@ -2,7 +2,7 @@
   "name": "smartorch",
   "displayName": "SmartOrch â€” Local AI",
   "description": "Asistente de IA local con RAG automÃ¡tico. Modelos pequeÃ±os, inteligencia grande. Sin pagar.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "jafeth",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["AI", "Programming Languages", "Other"],

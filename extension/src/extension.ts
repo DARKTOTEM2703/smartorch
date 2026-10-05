@@ -109,8 +109,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   // ── Comandos principales ─────────────────────────────────────────────────
   context.subscriptions.push(
-    vscode.commands.registerCommand('smartorch.openChat', () => {
-      vscode.commands.executeCommand('workbench.view.extension.smartorch');
+    vscode.commands.registerCommand('smartorch.openChat', async () => {
+      const cmds = await vscode.commands.getCommands(true);
+      if (cmds.includes('continue.focusContinueInput')) {
+        vscode.commands.executeCommand('continue.focusContinueInput');
+      } else {
+        vscode.commands.executeCommand('workbench.view.extension.smartorch');
+      }
     }),
 
     vscode.commands.registerCommand('smartorch.onboarding', () => OnboardingPanel.show(context)),
