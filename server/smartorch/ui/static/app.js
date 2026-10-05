@@ -4,7 +4,7 @@
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-const state = { key: "", convs: [], current: null, messages: [], streaming: false, abort: null, lastUpdated: 0 };
+const state = { key: "", convs: [], current: null, messages: [], streaming: false, abort: null, lastUpdated: 0, agent: false, workspace: "" };
 
 /* ── Modo nativo (webview de VS Code) o embebido (iframe) ───── */
 const params = new URLSearchParams(location.search);
@@ -252,6 +252,103 @@ function setHeader(title, source) {
   $("vscodeBtn").hidden = $("copyMdBtn").hidden = !state.current;
 }
 
+/* ── Agente: tarjetas de herramientas y aprobaciones ────────── */
+const pendingApprovals = new Set();
+const TOOL_ICONS = { list_files: "📂", read_file: "📖", search_text: "🔎", write_file: "📝", edit_file: "✏️", run_command: "⚙️" };
+
+function renderDiff(text) {
+  const pre = el("pre", "diff");
+  for (const line of text.split("\n")) {
+    const cls = line.startsWith("+++") || line.startsWith("---") ? "" : line.startsWith("+") ? "d-add" : line.startsWith("-") ? "d-del" : line.startsWith("@@") ? "d-hunk" : "";
+    const span = el("span", cls, line); pre.append(span, "\n");
+  }
+  return pre;
+}
+
+async function decide(id, ok, card) {
+  pendingApprovals.delete(id);
+  card.querySelector(".tool-actions")?.remove();
+  card.querySelector(".tool-state").textContent = ok ? "aprobado, ejecutando…" : "rechazado";
+  try { await api("/smartorch/agent/approve", { method: "POST", body: JSON.stringify({ call_id: id, approve: ok }) }); }
+  catch (e) { card.querySelector(".tool-state").textContent = "no se pudo enviar la decisión"; }
+}
+
+function toolCard(ev) {
+  const card = el("div", "tool" + (ev.needs_approval ? " asks" : ""));
+  const arg = ev.args.path || ev.args.pattern || ev.args.command || "";
+  const head = el("div", "tool-head");
+  head.append(el("span", "", TOOL_ICONS[ev.name] || "🔧"), el("b", "", ev.name), el("span", "tool-arg", String(arg)),
+              el("span", "tool-state", ev.needs_approval ? "espera tu aprobación" : "ejecutando…"));
+  card.append(head);
+  if (ev.preview) {
+    const body = el("div", "tool-body");
+    body.append(ev.name === "run_command" ? el("pre", "diff", ev.preview) : renderDiff(ev.preview));
+    card.append(body);
+  }
+  if (ev.needs_approval) {
+    pendingApprovals.add(ev.id);
+    const actions = el("div", "tool-actions");
+    const yes = el("button", "btn primary", ev.name === "run_command" ? "Ejecutar" : "Aprobar");
+    const no = el("button", "btn", "Rechazar");
+    yes.onclick = () => decide(ev.id, true, card);
+    no.onclick = () => decide(ev.id, false, card);
+    actions.append(yes, no);
+    card.append(actions);
+  }
+  return card;
+}
+
+function agentEvent(ev, ctx) {
+  const cards = (ctx.cards = ctx.cards || new Map());
+  if (ev.type === "text") ctx.logBox.append(el("div", "agent-note", ev.content));
+  else if (ev.type === "tool_call") { const c = toolCard(ev); cards.set(ev.id, c); ctx.logBox.append(c); }
+  else if (ev.type === "tool_result") {
+    const c = cards.get(ev.id); if (!c) return;
+    c.classList.remove("asks"); c.classList.add(ev.ok ? "ok" : "bad");
+    c.querySelector(".tool-state").textContent = ev.ok ? "listo" : "falló";
+    if (ev.output) {
+      const d = el("details", "tool-out"); d.append(el("summary", "", "Resultado"), el("pre", "", ev.output));
+      c.append(d);
+    }
+  }
+  else if (ev.type === "final") { ctx.set(ev.content); ctx.paint(); }
+  else if (ev.type === "error") { ctx.set(ctx.get() + `**Error:** ${ev.message}`); ctx.paint(); }
+  else if (ev.type === "done") ctx.stats(ev);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function denyPending() {
+  for (const id of [...pendingApprovals]) { pendingApprovals.delete(id); api("/smartorch/agent/approve", { method: "POST", body: JSON.stringify({ call_id: id, approve: false }) }).catch(() => {}); }
+}
+
+function setAgent(on) {
+  state.agent = on;
+  $("modeAgent").classList.toggle("on", on); $("modeChat").classList.toggle("on", !on);
+  $("approvalMode").hidden = !on;
+  $("wsChip").hidden = !on || !state.workspace;
+  try { localStorage.setItem("smartorch_agent", on ? "1" : "0"); } catch {}
+}
+
+async function runAnalysis(text) {
+  if (!state.current) state.current = (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : String(Date.now())).slice(0, 12);
+  $("input").value = ""; autosize(); hideSlash();
+  state.messages.push({ role: "user", content: text });
+  state.messages.push({ role: "assistant", content: "_Analizando el proyecto…_" });
+  renderMessages();
+  let report;
+  try {
+    const q = state.workspace ? `?root=${encodeURIComponent(state.workspace)}&refresh=true` : "?refresh=true";
+    report = await api(`/smartorch/analysis/report${q}`);
+  } catch (e) { report = `No pude analizar el proyecto: ${e.message}. Indexa un workspace primero.`; }
+  state.messages[state.messages.length - 1].content = report;
+  renderMessages();
+  try {
+    await api(`/smartorch/conversations/${state.current}/messages`, { method: "POST", body: JSON.stringify({ role: "user", content: text, source: EMBED ? "vscode" : "web" }) });
+    await api(`/smartorch/conversations/${state.current}/messages`, { method: "POST", body: JSON.stringify({ role: "assistant", content: report, source: EMBED ? "vscode" : "web" }) });
+    await loadConversations();
+  } catch { /* el informe ya esta en pantalla */ }
+}
+
 /* ── Envío con streaming ────────────────────────────────────── */
 function expandSlash(text) {
   const m = text.match(/^\/(\w+)\s*([\s\S]*)$/);
@@ -279,6 +376,7 @@ function markStep(step) {
 async function send(raw) {
   const text = (raw ?? $("input").value).trim();
   if (!text || state.streaming) return;
+  if (/^\/analizar\b/i.test(text)) return runAnalysis(text);
   $("input").value = ""; autosize(); hideSlash();
   if (!state.current) state.current = (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : String(Date.now())).slice(0, 12);
 
@@ -302,11 +400,22 @@ async function send(raw) {
   box.append(live); box.scrollTop = box.scrollHeight;
 
   let answer = "", stats = null, raf = 0;
-  const paint = () => { raf = 0; bubble.innerHTML = renderMarkdown(answer); box.scrollTop = box.scrollHeight; };
+  const useAgent = state.agent;
+  let logBox = null, answerBox = bubble;
+  if (useAgent) { logBox = el("div", "agent-log"); answerBox = el("div", "agent-answer"); bubble.append(logBox, answerBox); }
+  const paint = () => { raf = 0; answerBox.innerHTML = renderMarkdown(answer); box.scrollTop = box.scrollHeight; };
   state.abort = new AbortController();
   setBusy(true);
+  // un unico contexto por turno: las tarjetas de herramientas se actualizan entre eventos
+  const agentCtx = { logBox, paint, cards: new Map(), set: (a) => { answer = a; }, get: () => answer, stats: (s) => { stats = s; } };
   try {
-    await transport.stream("/v1/chat/completions", {
+    if (useAgent) {
+      await transport.stream("/smartorch/agent/run", {
+        mode: $("approvalMode").value, conversation_id: state.current, source: EMBED ? "vscode" : "web",
+        workspace: state.workspace || undefined, title: text,
+        messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
+      }, (ev) => agentEvent(ev, agentCtx), state.abort.signal);
+    } else await transport.stream("/v1/chat/completions", {
       stream: true, max_tokens: 2048, conversation_id: state.current, source: EMBED ? "vscode" : "web",
       workspace: WORKSPACE || undefined, title: text,
       messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
@@ -319,10 +428,10 @@ async function send(raw) {
     if (e.name !== "AbortError") answer += `\n\n**Error:** ${e.message}`;
   } finally {
     bubble.classList.remove("typing");
-    state.abort = null; setBusy(false);
+    state.abort = null; setBusy(false); denyPending();
     if (raf) cancelAnimationFrame(raf);
-    bubble.innerHTML = renderMarkdown(answer || "_(sin respuesta)_");
-    const meta = stats ? [stats.model, stats.tokens_per_sec ? `${stats.tokens_per_sec.toFixed(1)} tok/s` : "", `${stats.elapsed}s`].filter(Boolean).join(" · ") : "";
+    answerBox.innerHTML = renderMarkdown(answer || "_(sin respuesta)_");
+    const meta = stats ? [stats.model, stats.steps ? `${stats.steps} pasos` : "", stats.tokens_per_sec ? `${stats.tokens_per_sec.toFixed(1)} tok/s` : "", `${stats.elapsed}s`].filter(Boolean).join(" · ") : "";
     if (meta) bubble.append(el("div", "msg-meta", meta));
     state.messages.push({ role: "assistant", content: answer });
     state.lastUpdated = Infinity; // este turno ya esta en pantalla: evita recargarlo desde el servidor
@@ -370,6 +479,7 @@ async function init() {
     const cfg = await transport.config();
     state.key = cfg.api_key || "";
     state.auth = cfg.auth !== false;
+    state.workspace = WORKSPACE || cfg.workspace || "";
     if (cfg.donate_url) { const d = $("donate"); d.href = cfg.donate_url; d.hidden = false; }
   } catch {}
   if (!state.key && state.auth !== false && !NATIVE) {
@@ -388,6 +498,13 @@ async function init() {
   }
 
   $("newChat").onclick = newChat;
+  let prefAgent = NATIVE ? "1" : "0";
+  try { prefAgent = localStorage.getItem("smartorch_agent") ?? prefAgent; } catch {}
+  if (!state.workspace) state.workspace = WORKSPACE;
+  $("wsChip").textContent = "📁 " + (state.workspace.split(/[\\/]/).filter(Boolean).pop() || "");
+  $("modeChat").onclick = () => setAgent(false);
+  $("modeAgent").onclick = () => setAgent(true);
+  setAgent(prefAgent === "1");
   $("menuBtn").onclick = () => $("sidebar").classList.toggle("open");
   $("themeBtn").onclick = () => {
     const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");

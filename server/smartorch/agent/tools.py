@@ -102,8 +102,11 @@ def is_mutating(tool: str) -> bool:
 
 def list_files(sb: Sandbox, path: str = ".") -> ToolOutcome:
     base = sb.resolve(path)
+    if base.is_file():  # error tipico del modelo: orientarlo en vez de fallar
+        lines = len(base.read_text(encoding="utf-8", errors="replace").splitlines()) if base.stat().st_size <= MAX_READ_BYTES else "muchas"
+        return ToolOutcome(True, f"{sb.rel(base)} es un archivo ({lines} líneas), no una carpeta. Usa read_file para ver su contenido.")
     if not base.is_dir():
-        return ToolOutcome(False, f"'{path}' no es una carpeta")
+        return ToolOutcome(False, f"'{path}' no existe")
     entries: list[str] = []
     for dirpath, dirnames, filenames in os.walk(base):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
@@ -191,20 +194,80 @@ def write_file(sb: Sandbox, path: str, content: str) -> ToolOutcome:
     return ToolOutcome(True, f"{'Sobrescrito' if existed else 'Creado'} {sb.rel(p)} ({len(content)} caracteres)")
 
 
+_NUMBERED = re.compile(r"^\s*\d+[:|]\s?")
+
+
+def _strip_line_numbers(text: str) -> str:
+    """read_file muestra '9: codigo'; si el modelo copia esos prefijos, se quitan."""
+    lines = text.split("\n")
+    body = [l for l in lines if l.strip()]
+    if body and all(_NUMBERED.match(l) for l in body):
+        return "\n".join(_NUMBERED.sub("", l, count=1) for l in lines)
+    return text
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _closest_hint(current: str, old_text: str) -> str:
+    """Lineas del archivo mas parecidas a lo que el modelo quiso reemplazar."""
+    file_lines = current.splitlines()
+    target = next((l.strip() for l in old_text.splitlines() if l.strip()), "")
+    if not target or not file_lines:
+        return ""
+    best, score = 0, 0.0
+    for i, line in enumerate(file_lines):
+        ratio = difflib.SequenceMatcher(None, target, line.strip()).ratio()
+        if ratio > score:
+            best, score = i, ratio
+    if score < 0.5:
+        return ""
+    lo, hi = max(0, best - 1), min(len(file_lines), best + 3)
+    shown = "\n".join(f"{n + 1}: {file_lines[n]}" for n in range(lo, hi))
+    return f"\nTexto parecido en el archivo (copia exactamente, sin los números de línea):\n{shown}"
+
+
+def _replace_unique(current: str, old_text: str, new_text: str) -> str:
+    if not old_text or not old_text.strip():
+        raise SandboxError("old_text no puede estar vacío")
+
+    # 1) coincidencia exacta (tambien tras quitar prefijos de numero de linea)
+    for candidate in dict.fromkeys((old_text, _strip_line_numbers(old_text))):
+        count = current.count(candidate)
+        if count == 1:
+            replacement = new_text if candidate == old_text else _strip_line_numbers(new_text)
+            return current.replace(candidate, replacement, 1)
+        if count > 1:
+            raise SandboxError(f"old_text aparece {count} veces; incluye más contexto para que sea único")
+
+    # 2) mismo bloque de lineas ignorando indentacion y espacios finales
+    wanted = [l.strip() for l in _strip_line_numbers(old_text).strip("\n").split("\n")]
+    lines = current.split("\n")
+    stripped = [l.strip() for l in lines]
+    hits = [i for i in range(len(lines) - len(wanted) + 1) if stripped[i : i + len(wanted)] == wanted]
+    if len(hits) > 1:
+        raise SandboxError(f"old_text coincide con {len(hits)} bloques; incluye más contexto para que sea único")
+    if len(hits) == 1:
+        i = hits[0]
+        actual_indent = _indent(lines[i])
+        given_first = _indent(next((l for l in _strip_line_numbers(old_text).split("\n") if l.strip()), ""))
+        replacement = _strip_line_numbers(new_text).strip("\n").split("\n")
+        if actual_indent != given_first:  # el modelo omitio o cambio la indentacion: se ajusta
+            delta = actual_indent[len(given_first):] if actual_indent.startswith(given_first) else actual_indent
+            replacement = [(delta + l) if l.strip() else l for l in replacement]
+        return "\n".join(lines[:i] + replacement + lines[i + len(wanted):])
+
+    raise SandboxError("old_text no aparece en el archivo; lee el archivo y copia el texto exacto." + _closest_hint(current, old_text))
+
+
 def _edited(sb: Sandbox, path: str, old_text: str, new_text: str) -> tuple[Path, str, str]:
     p = sb.resolve(path)
     sb.check_not_sensitive(p)
     if not p.is_file():
         raise SandboxError(f"'{path}' no existe")
     current = p.read_text(encoding="utf-8", errors="replace")
-    count = current.count(old_text)
-    if not old_text:
-        raise SandboxError("old_text no puede estar vacio")
-    if count == 0:
-        raise SandboxError("old_text no aparece en el archivo; lee el archivo y copia el texto exacto")
-    if count > 1:
-        raise SandboxError(f"old_text aparece {count} veces; incluye mas contexto para que sea unico")
-    return p, current, current.replace(old_text, new_text, 1)
+    return p, current, _replace_unique(current, old_text, new_text)
 
 
 def preview_edit(sb: Sandbox, path: str, old_text: str, new_text: str) -> str:

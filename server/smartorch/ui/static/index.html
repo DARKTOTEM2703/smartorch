@@ -49,6 +49,16 @@
 
     <footer class="composer">
       <div class="slash-menu" id="slashMenu" hidden></div>
+      <div class="agentbar" id="agentBar">
+        <button class="mode on" id="modeChat" type="button" title="Chat con el contexto de tu proyecto">💬 Chat</button>
+        <button class="mode" id="modeAgent" type="button" title="El agente lee y modifica tu proyecto, siempre con tu aprobación">🛠 Agente</button>
+        <select id="approvalMode" title="Qué puede hacer sin preguntarte" hidden>
+          <option value="ask">Preguntar siempre</option>
+          <option value="auto_edits">Editar archivos solo</option>
+          <option value="readonly">Solo lectura</option>
+        </select>
+        <span class="ws" id="wsChip" hidden></span>
+      </div>
       <div class="box">
         <textarea id="input" rows="1" placeholder="Escribe un mensaje o / para comandos…  (Enter envía · Shift+Enter nueva línea)" aria-label="Mensaje"></textarea>
         <button class="btn primary send" id="sendBtn">Enviar</button>

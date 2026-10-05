@@ -43,6 +43,12 @@ class SandboxTests(unittest.TestCase):
         with self.assertRaises(SandboxError):
             tools.write_file(self.sb, "claves/server.pem", "x")
 
+    def test_list_files_on_a_file_guides_instead_of_failing(self):
+        out = tools.list_files(self.sb, "app.py")
+        self.assertTrue(out.ok)
+        self.assertIn("read_file", out.output)
+        self.assertFalse(tools.list_files(self.sb, "no-existe").ok)
+
     def test_read_numbers_lines_and_ranges(self):
         out = tools.read_file(self.sb, "app.py")
         self.assertTrue(out.ok)
@@ -69,6 +75,31 @@ class SandboxTests(unittest.TestCase):
         ok = tools.edit_file(self.sb, "app.py", "return 'hola'", "return 'adios'")
         self.assertTrue(ok.ok)
         self.assertIn("adios", open(os.path.join(self.root, "app.py"), encoding="utf-8").read())
+
+    def test_edit_tolerates_line_number_prefixes_and_indentation(self):
+        Path = __import__("pathlib").Path
+        Path(self.root, "calc.py").write_text("def divide(a, b):\n    # BUG\n    return a * b\n", encoding="utf-8")
+        # copiando los prefijos de numero de linea que muestra read_file
+        self.assertTrue(tools.edit_file(self.sb, "calc.py", "2:     # BUG\n3:     return a * b", "    return a / b").ok)
+        self.assertEqual(Path(self.root, "calc.py").read_text(encoding="utf-8"), "def divide(a, b):\n    return a / b\n")
+        # sin indentacion: se ajusta a la del archivo
+        Path(self.root, "calc.py").write_text("def divide(a, b):\n    # BUG\n    return a * b\n", encoding="utf-8")
+        self.assertTrue(tools.edit_file(self.sb, "calc.py", "# BUG\nreturn a * b", "return a / b").ok)
+        self.assertEqual(Path(self.root, "calc.py").read_text(encoding="utf-8"), "def divide(a, b):\n    return a / b\n")
+
+    def test_failed_edit_shows_similar_lines_to_help_the_model(self):
+        Path = __import__("pathlib").Path
+        Path(self.root, "calc.py").write_text("def divide(a, b):\n    return a * b\n", encoding="utf-8")
+        with self.assertRaises(SandboxError) as ctx:
+            tools.edit_file(self.sb, "calc.py", "return a * c", "x")
+        self.assertIn("Texto parecido", str(ctx.exception))
+        self.assertIn("2:     return a * b", str(ctx.exception))
+
+    def test_fuzzy_edit_still_refuses_ambiguous_blocks(self):
+        Path = __import__("pathlib").Path
+        Path(self.root, "dup2.py").write_text("    x = 1\n    y = 2\n    x = 1\n    y = 2\n", encoding="utf-8")
+        with self.assertRaises(SandboxError):
+            tools.edit_file(self.sb, "dup2.py", "x = 1\ny = 2", "z")
 
     def test_write_creates_and_previews_diff(self):
         prev_new = tools.preview(self.sb, "write_file", {"path": "sub/nuevo.txt", "content": "uno\ndos\n"})

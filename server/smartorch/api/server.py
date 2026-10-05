@@ -25,6 +25,7 @@ import asyncio
 
 from smartorch.config import HOST, PORT, API_KEY, MODELS, AGENT_WORK_DIR, model_context_window
 from smartorch.core import ollama_client as ollama, indexer
+from smartorch.agent import loop as agent_loop
 from smartorch.core import analysis, context, gating, history, orchestrator, workspaces
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,7 @@ async def ui_config(request: Request):
     return {
         "api_key":    API_KEY if local else "",
         "auth":       bool(API_KEY),
+        "workspace":  workspaces.current_root() or "",
         "donate_url": os.environ.get("SMARTORCH_DONATE_URL", "https://github.com/DARKTOTEM2703/smartorch"),
         "version":    "2.0.0",
     }
@@ -493,6 +495,61 @@ async def index_workspace(req: IndexRequest):
 async def data_dir_info():
     from smartorch.core import datadir
     return await asyncio.to_thread(datadir.info)
+
+
+class AgentRequest(BaseModel):
+    messages: list[Message]
+    workspace: Optional[str] = None
+    model: Optional[str] = None
+    mode: Optional[str] = "ask"            # ask | auto_edits | readonly
+    conversation_id: Optional[str] = None
+    source: Optional[str] = "api"
+    title: Optional[str] = None
+
+
+class AgentDecision(BaseModel):
+    call_id: str
+    approve: bool
+
+
+@app.post("/smartorch/agent/run", dependencies=[Depends(verify_key)])
+async def agent_run(req: AgentRequest):
+    """El agente trabaja sobre un workspace con herramientas; lo que modifica espera aprobacion."""
+    import json as _json
+    msgs = [{"role": m.role, "content": m.content} for m in req.messages]
+    if not msgs:
+        raise HTTPException(status_code=400, detail="messages requeridos")
+    workspace = req.workspace or workspaces.current_root()
+    _ensure_indexed(workspace)
+    workspaces.use_root(workspace)
+
+    def stream():
+        final, log = "", []
+        try:
+            for ev in agent_loop.run(msgs, workspace or "", req.model, req.mode or "ask"):
+                if ev["type"] == "final":
+                    final = ev["content"]
+                elif ev["type"] == "done":
+                    log = ev.get("tool_log", [])
+                yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+        finally:
+            if req.conversation_id and (final or log):
+                actions = ("\n\n---\n_Acciones del agente:_\n" + "\n".join(f"- {l}" for l in log)) if log else ""
+                try:
+                    history.save_turn(req.conversation_id, req.source or "api", _last_user_text(msgs),
+                                      final + actions, workspace, req.title)
+                except Exception as e:
+                    logger.warning(f"[HISTORY] no se pudo guardar el turno del agente: {e}")
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.post("/smartorch/agent/approve", dependencies=[Depends(verify_key)])
+async def agent_approve(body: AgentDecision):
+    if not agent_loop.registry.decide(body.call_id, body.approve):
+        raise HTTPException(status_code=404, detail="No hay una acción pendiente con ese id")
+    return {"status": "ok"}
 
 
 def _analysis_root(root: Optional[str]) -> str:
