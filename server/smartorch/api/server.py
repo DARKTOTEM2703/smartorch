@@ -145,6 +145,8 @@ def _persist_turn(req: "ChatRequest", msgs: list[dict], answer: str) -> None:
 
 class CompletionRequest(BaseModel):
     prompt:      str
+    suffix:      Optional[str]   = None   # codigo posterior al cursor (relleno en el medio)
+    stop:        Optional[list[str]] = None
     model:       Optional[str]   = None
     max_tokens:  Optional[int]   = 128
     temperature: Optional[float] = 0.1
@@ -432,17 +434,29 @@ async def _stream_chat(msgs, max_tokens, temperature, req: Optional["ChatRequest
 # ── Completions (autocompletado) ─────────────────────────────────────────────
 @app.post("/v1/completions", dependencies=[Depends(verify_key)])
 async def complete(req: CompletionRequest):
-    result = await asyncio.to_thread(
-        ollama.generate,
-        req.prompt,
-        req.model or MODELS["code"],
-        req.max_tokens or 128,
-    )
+    primary = req.model or MODELS.get("complete") or MODELS["code"]
+    used = primary
+
+    def _run(model: str) -> str:
+        # Siempre formato de relleno (FIM): sin suffix el modelo responde con prosa en vez de completar
+        return ollama.generate(model=model, prompt=req.prompt, max_tokens=req.max_tokens or 128,
+                               temperature=req.temperature or 0.1,
+                               suffix=req.suffix if req.suffix is not None else "\n",
+                               strip=False,
+                               stop=req.stop or ["\n\n", "<|file_sep|>", "<|endoftext|>", "<|fim_pad|>"])
+
+    try:
+        result = await asyncio.to_thread(_run, primary)
+    except ConnectionError:
+        if primary == MODELS["code"]:
+            raise
+        used = MODELS["code"]  # el modelo ligero no esta instalado: usar el de codigo
+        result = await asyncio.to_thread(_run, used)
     return {
         "id":      f"cmpl-{uuid.uuid4().hex[:8]}",
         "object":  "text_completion",
         "created": int(time.time()),
-        "model":   req.model or MODELS["code"],
+        "model":   used,
         "choices": [{"text": result, "index": 0, "finish_reason": "stop"}],
     }
 

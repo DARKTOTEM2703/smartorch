@@ -1,167 +1,138 @@
 {
   "name": "smartorch",
-  "displayName": "SmartOrch â€” Local AI",
-  "description": "Asistente de IA local con RAG automÃ¡tico. Modelos pequeÃ±os, inteligencia grande. Sin pagar.",
-  "version": "0.1.5",
-  "publisher": "jafeth",
+  "displayName": "SmartOrch — IA local",
+  "description": "Chat, autocompletado y agente con modelos locales (Ollama) y RAG sobre tu proyecto. Tu código no sale de tu máquina.",
+  "version": "2.1.0",
+  "publisher": "smartorch",
+  "license": "MIT",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["AI", "Programming Languages", "Other"],
-  "keywords": ["ai", "ollama", "local", "copilot", "chat", "autocomplete", "free", "llm", "offline", "privacy"],
+  "keywords": ["ai", "ollama", "local", "copilot", "chat", "autocomplete", "agent", "llm", "offline", "privacy"],
   "icon": "media/smartorch-icon.png",
-  "galleryBanner": {
-    "color": "#0d1117",
-    "theme": "dark"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/DARKTOTEM2703/smartorch"
-  },
+  "galleryBanner": { "color": "#0d1117", "theme": "dark" },
+  "repository": { "type": "git", "url": "https://github.com/DARKTOTEM2703/smartorch" },
   "homepage": "https://github.com/DARKTOTEM2703/smartorch#readme",
-  "bugs": {
-    "url": "https://github.com/DARKTOTEM2703/smartorch/issues"
-  },
-  "activationEvents": ["onStartupFinished"],
+  "bugs": { "url": "https://github.com/DARKTOTEM2703/smartorch/issues" },
+  "activationEvents": ["onStartupFinished", "onUri"],
   "main": "./out/extension.js",
   "contributes": {
-    "chatParticipants": [
-      {
-        "id": "smartorch.assistant",
-        "name": "smartorch",
-        "fullName": "SmartOrch",
-        "description": "AI local Â· SOLID/DRY Â· YARA/Sigma Â· Sin enviar cÃ³digo a la nube",
-        "isSticky": true,
-        "commands": [
-          { "name": "solid",    "description": "Aplicar principios SOLID y DRY" },
-          { "name": "refactor", "description": "Refactorizar con clean architecture" },
-          { "name": "review",   "description": "Code review exhaustivo" },
-          { "name": "test",     "description": "Generar tests unitarios" },
-          { "name": "explain",  "description": "Explicar el cÃ³digo" },
-          { "name": "doc",      "description": "Generar documentaciÃ³n" },
-          { "name": "yara",     "description": "Generar regla YARA" },
-          { "name": "sigma",    "description": "Generar regla Sigma (MITRE ATT&CK)" },
-          { "name": "c2",       "description": "Analizar C2/malware (educativo/defensivo)" },
-          { "name": "pentest",  "description": "GuÃ­a de pentest" },
-          { "name": "web",      "description": "Feature web (React/FastAPI/Vue)" },
-          { "name": "mobile",   "description": "Feature mobile (Flutter/React Native)" },
-          { "name": "optimize", "description": "Optimizar rendimiento y complejidad" }
-        ]
-      }
-    ],
-    "commands": [
-      { "command": "smartorch.openChat",       "title": "SmartOrch: Abrir Chat",              "icon": "media/icons/smartorch-activity.svg" },
-      { "command": "smartorch.explain",    "title": "SmartOrch: /explain â€” Explicar cÃ³digo" },
-      { "command": "smartorch.fix",        "title": "SmartOrch: /fix â€” Corregir bugs" },
-      { "command": "smartorch.refactor",       "title": "SmartOrch: /refactor â€” Refactorizar" },
-      { "command": "smartorch.solid",          "title": "SmartOrch: /solid â€” Aplicar SOLID/DRY" },
-      { "command": "smartorch.review",         "title": "SmartOrch: /review â€” Code review" },
-      { "command": "smartorch.test",           "title": "SmartOrch: /test â€” Generar tests" },
-      { "command": "smartorch.docstring",      "title": "SmartOrch: /doc â€” Generar documentaciÃ³n" },
-      { "command": "smartorch.optimize",       "title": "SmartOrch: /optimize â€” Optimizar rendimiento" },
-      { "command": "smartorch.yara",           "title": "SmartOrch: /yara â€” Generar regla YARA" },
-      { "command": "smartorch.sigma",          "title": "SmartOrch: /sigma â€” Generar regla Sigma" },
-      { "command": "smartorch.c2",             "title": "SmartOrch: /c2 â€” Analizar C2/malware" },
-      { "command": "smartorch.pentest",        "title": "SmartOrch: /pentest â€” GuÃ­a de pentest" },
-      { "command": "smartorch.web",            "title": "SmartOrch: /web â€” Feature web" },
-      { "command": "smartorch.mobile",         "title": "SmartOrch: /mobile â€” Feature mobile" },
-      { "command": "smartorch.indexWorkspace", "title": "SmartOrch: Indexar workspace (RAG)" },
-      { "command": "smartorch.status",         "title": "SmartOrch: Ver estado y mÃ©tricas" },
-      { "command": "smartorch.startServer",    "title": "SmartOrch: Iniciar servidor" },
-      { "command": "smartorch.onboarding",     "title": "SmartOrch: ConfiguraciÃ³n inicial (analizar PC)" }
-    ],
-    "submenus": [
-      {
-        "id": "smartorch.contextMenu",
-        "label": "âš¡ SmartOrch"
-      }
-    ],
-    "menus": {
-      "editor/context": [
-        {
-          "submenu": "smartorch.contextMenu",
-          "group": "0_smartorch",
-          "when": "editorTextFocus"
-        }
-      ],
-      "smartorch.contextMenu": [
-        { "command": "smartorch.solid",       "group": "1_clean@1", "when": "editorHasSelection" },
-        { "command": "smartorch.refactor",    "group": "1_clean@2", "when": "editorHasSelection" },
-        { "command": "smartorch.review",      "group": "1_clean@3", "when": "editorHasSelection" },
-        { "command": "smartorch.test",        "group": "1_clean@4", "when": "editorHasSelection" },
-        { "command": "smartorch.explain", "group": "1_clean@5", "when": "editorHasSelection" },
-        { "command": "smartorch.fix",     "group": "1_clean@6", "when": "editorHasSelection" },
-        { "command": "smartorch.docstring",   "group": "1_clean@7", "when": "editorHasSelection" },
-        { "command": "smartorch.optimize",    "group": "1_clean@8", "when": "editorHasSelection" },
-        { "command": "smartorch.yara",        "group": "2_sec@1",   "when": "editorHasSelection" },
-        { "command": "smartorch.sigma",       "group": "2_sec@2",   "when": "editorHasSelection" },
-        { "command": "smartorch.c2",          "group": "2_sec@3",   "when": "editorHasSelection" },
-        { "command": "smartorch.pentest",     "group": "2_sec@4",   "when": "editorHasSelection" },
-        { "command": "smartorch.web",         "group": "3_stack@1" },
-        { "command": "smartorch.mobile",      "group": "3_stack@2" }
-      ],
-      "commandPalette": [
-        { "command": "smartorch.openChat" },
-        { "command": "smartorch.startServer" },
-        { "command": "smartorch.onboarding" },
-        { "command": "smartorch.status" },
-        { "command": "smartorch.indexWorkspace" }
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "smartorch", "title": "SmartOrch", "icon": "media/icons/smartorch-activity.svg" }
       ]
     },
+    "views": {
+      "smartorch": [{ "type": "webview", "id": "smartorch.chatView", "name": "Chat" }]
+    },
+    "commands": [
+      { "command": "smartorch.openChat", "title": "Abrir chat", "category": "SmartOrch" },
+      { "command": "smartorch.explain", "title": "/explain — Explicar código", "category": "SmartOrch" },
+      { "command": "smartorch.fix", "title": "/fix — Corregir bugs", "category": "SmartOrch" },
+      { "command": "smartorch.refactor", "title": "/refactor — Refactorizar", "category": "SmartOrch" },
+      { "command": "smartorch.solid", "title": "/solid — Aplicar SOLID/DRY", "category": "SmartOrch" },
+      { "command": "smartorch.review", "title": "/review — Code review", "category": "SmartOrch" },
+      { "command": "smartorch.test", "title": "/test — Generar tests", "category": "SmartOrch" },
+      { "command": "smartorch.docstring", "title": "/doc — Generar documentación", "category": "SmartOrch" },
+      { "command": "smartorch.optimize", "title": "/optimize — Optimizar rendimiento", "category": "SmartOrch" },
+      { "command": "smartorch.yara", "title": "/yara — Generar regla YARA", "category": "SmartOrch" },
+      { "command": "smartorch.sigma", "title": "/sigma — Generar regla Sigma", "category": "SmartOrch" },
+      { "command": "smartorch.c2", "title": "/c2 — Analizar C2/malware", "category": "SmartOrch" },
+      { "command": "smartorch.pentest", "title": "/pentest — Guía de pentest", "category": "SmartOrch" },
+      { "command": "smartorch.web", "title": "/web — Feature web", "category": "SmartOrch" },
+      { "command": "smartorch.mobile", "title": "/mobile — Feature mobile", "category": "SmartOrch" },
+      { "command": "smartorch.onboarding", "title": "Configuración inicial", "category": "SmartOrch" },
+      { "command": "smartorch.startServer", "title": "Iniciar servidor", "category": "SmartOrch" },
+      { "command": "smartorch.status", "title": "Ver estado del servidor", "category": "SmartOrch" },
+      { "command": "smartorch.indexWorkspace", "title": "Indexar workspace (RAG)", "category": "SmartOrch" },
+      { "command": "smartorch.terminalChat", "title": "Chat en terminal", "category": "SmartOrch" },
+      { "command": "smartorch.openWeb", "title": "Abrir la web de SmartOrch", "category": "SmartOrch" },
+      { "command": "smartorch.sendToWeb", "title": "Enviar archivo o selección a la web", "category": "SmartOrch" },
+      { "command": "smartorch.conversations", "title": "Conversaciones compartidas (web · terminal · VS Code)", "category": "SmartOrch" }
+    ],
+    "submenus": [{ "id": "smartorch.contextMenu", "label": "⚡ SmartOrch" }],
+    "menus": {
+      "editor/context": [
+        { "submenu": "smartorch.contextMenu", "group": "0_smartorch", "when": "editorTextFocus" }
+      ],
+      "smartorch.contextMenu": [
+        { "command": "smartorch.explain", "group": "1_clean@1", "when": "editorHasSelection" },
+        { "command": "smartorch.fix", "group": "1_clean@2", "when": "editorHasSelection" },
+        { "command": "smartorch.refactor", "group": "1_clean@3", "when": "editorHasSelection" },
+        { "command": "smartorch.solid", "group": "1_clean@4", "when": "editorHasSelection" },
+        { "command": "smartorch.review", "group": "1_clean@5", "when": "editorHasSelection" },
+        { "command": "smartorch.test", "group": "1_clean@6", "when": "editorHasSelection" },
+        { "command": "smartorch.docstring", "group": "1_clean@7", "when": "editorHasSelection" },
+        { "command": "smartorch.optimize", "group": "1_clean@8", "when": "editorHasSelection" },
+        { "command": "smartorch.yara", "group": "2_sec@1", "when": "editorHasSelection" },
+        { "command": "smartorch.sigma", "group": "2_sec@2", "when": "editorHasSelection" },
+        { "command": "smartorch.c2", "group": "2_sec@3", "when": "editorHasSelection" },
+        { "command": "smartorch.pentest", "group": "2_sec@4", "when": "editorHasSelection" },
+        { "command": "smartorch.web", "group": "3_stack@1" },
+        { "command": "smartorch.mobile", "group": "3_stack@2" },
+        { "command": "smartorch.sendToWeb", "group": "4_bridge@1" }
+      ]
+    },
+    "keybindings": [
+      { "command": "smartorch.openChat", "key": "ctrl+shift+l", "mac": "cmd+shift+l" },
+      { "command": "smartorch.explain", "key": "ctrl+alt+e", "mac": "cmd+alt+e", "when": "editorHasSelection" },
+      { "command": "smartorch.review", "key": "ctrl+alt+r", "mac": "cmd+alt+r", "when": "editorHasSelection" }
+    ],
     "configuration": {
       "title": "SmartOrch",
       "properties": {
         "smartorch.apiUrl": {
           "type": "string",
           "default": "http://localhost:8080/v1",
-          "description": "URL del servidor SmartOrch"
+          "description": "URL del servidor SmartOrch."
         },
         "smartorch.apiKey": {
           "type": "string",
           "default": "smartorch-local-key",
-          "description": "API key de SmartOrch"
+          "description": "API key del servidor SmartOrch (SMARTORCH_API_KEY)."
         },
-        "smartorch.model": {
+        "smartorch.runtime": {
           "type": "string",
-          "default": "hermes3:8b",
-          "description": "Modelo por defecto"
+          "enum": ["auto", "native", "wsl", "docker", "remote"],
+          "default": "auto",
+          "description": "Dónde corre el servidor: nativo (Windows/Linux/macOS), WSL, Docker o remoto. Se elige en 'SmartOrch: Configuración inicial'."
+        },
+        "smartorch.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Iniciar el servidor SmartOrch automáticamente al abrir VS Code."
+        },
+        "smartorch.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Opcional: ruta a run.py del servidor. Vacío = se busca el comando `smartorch`, la carpeta del workspace o el paquete Python instalado."
+        },
+        "smartorch.ollamaModelsPath": {
+          "type": "string",
+          "default": "",
+          "description": "Carpeta donde Ollama guarda los modelos (OLLAMA_MODELS). Vacío = la de por defecto. Se cambia desde la configuración inicial."
+        },
+        "smartorch.ollamaPath": {
+          "type": "string",
+          "default": "",
+          "description": "Ruta al ejecutable de Ollama. Vacío = el que está en el PATH."
         },
         "smartorch.autocomplete": {
           "type": "boolean",
           "default": true,
-          "description": "Habilitar autocompletado inline"
+          "description": "Habilitar autocompletado en línea."
         },
         "smartorch.autocompleteDelay": {
           "type": "number",
-          "default": 600,
-          "description": "Delay en ms antes de solicitar autocompletado"
+          "default": 400,
+          "description": "Milisegundos de pausa al escribir antes de pedir una sugerencia."
         }
       }
-    },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "smartorch",
-          "title": "SmartOrch",
-          "icon": "media/icons/smartorch-activity.svg"
-        }
-      ]
-    },
-    "views": {
-      "smartorch": [
-        { "type": "webview", "id": "smartorch.chatView", "name": "Chat" }
-      ]
-    },
-    "keybindings": [
-      { "command": "smartorch.openChat",    "key": "ctrl+shift+l", "mac": "cmd+shift+l" },
-      { "command": "smartorch.explain", "key": "ctrl+shift+e", "mac": "cmd+shift+e", "when": "editorHasSelection" },
-      { "command": "smartorch.solid",       "key": "ctrl+shift+s ctrl+shift+o", "mac": "cmd+shift+s cmd+shift+o", "when": "editorHasSelection" },
-      { "command": "smartorch.review",      "key": "ctrl+shift+r", "mac": "cmd+shift+r", "when": "editorHasSelection" }
-    ]
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package",
-    "lint": "eslint src"
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -169,4 +140,3 @@
     "typescript": "^5.3.0"
   }
 }
-

@@ -25,6 +25,7 @@ MODELS = {
     # Para más calidad (8GB VRAM): MODEL_CODE=qwen2.5-coder:14b MODEL_AGENT=phi4:14b
     # Para razonamiento (9GB VRAM): MODEL_AGENT=deepseek-r1:14b (thinking model)
     "code":      os.environ.get("MODEL_CODE",      "qwen2.5-coder:7b"),
+    "complete":  os.environ.get("MODEL_COMPLETE",  "qwen2.5-coder:1.5b"),  # autocompletado: rapido y ligero
     "agent":     os.environ.get("MODEL_AGENT",     "hermes3:8b"),
     "security":  os.environ.get("MODEL_SECURITY",  "hermes3:8b"),
     "chat":      os.environ.get("MODEL_CHAT",       "hermes3:8b"),

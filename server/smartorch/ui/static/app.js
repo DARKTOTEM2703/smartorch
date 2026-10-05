@@ -6,6 +6,20 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 
 const state = { key: "", convs: [], current: null, messages: [], streaming: false, abort: null, lastUpdated: 0 };
 
+/* ── Modo embebido (panel de VS Code) ───────────────────────── */
+const params = new URLSearchParams(location.search);
+const EMBED = params.get("embed") === "vscode";
+const WORKSPACE = params.get("workspace") || "";
+const host = { pending: null };
+function toHost(msg) { if (EMBED && parent !== window) parent.postMessage({ smartorch: true, ...msg }, "*"); }
+function hostContext() {
+  return new Promise((resolve) => {
+    host.pending = resolve;
+    toHost({ type: "getContext" });
+    setTimeout(() => { if (host.pending === resolve) { host.pending = null; resolve(null); } }, 1500);
+  });
+}
+
 /* ── Slash commands ─────────────────────────────────────────── */
 const SLASH = {
   explain:  ["Explicar código", "Explícame este código paso a paso. ¿Qué hace, cómo funciona internamente y hay algo no obvio?"],
@@ -80,7 +94,8 @@ function renderMarkdown(src) {
   flush();
   return out.join("\n").replace(/\u0000(\d+)\u0000/g, (_, i) => {
     const b = blocks[+i];
-    return `<div class="codeblock"><div class="code-head"><span>${esc(b.lang || "código")}</span><button type="button" data-copy>Copiar</button></div><pre><code>${esc(b.code)}</code></pre></div>`;
+    const editorBtns = EMBED ? '<button type="button" data-insert>Insertar</button><button type="button" data-newfile>Nuevo archivo</button>' : "";
+    return `<div class="codeblock"><div class="code-head"><span>${esc(b.lang || "código")}</span><span class="code-btns">${editorBtns}<button type="button" data-copy>Copiar</button></span></div><pre><code>${esc(b.code)}</code></pre></div>`;
   });
 }
 
@@ -97,6 +112,17 @@ function messageNode(role, content, metaText) {
 
 let emptyNode = null;
 
+/* El servidor guarda el prompt completo (contexto adjunto, plantilla del comando);
+   al mostrarlo se compacta para que la burbuja del usuario siga siendo legible. */
+function compactUser(content) {
+  const attached = content.match(/^Archivo `([^`]+)` \(([^)]*)\):\n```[\s\S]*?```\n\n([\s\S]*)$/);
+  if (attached) return `📎 ${attached[1]}\n\n${compactUser(attached[3])}`;
+  for (const [cmd, [, prompt]] of Object.entries(SLASH)) {
+    if (content.startsWith(prompt)) return `/${cmd}${content.slice(prompt.length).trim() ? "\n\n" + content.slice(prompt.length).trim() : ""}`;
+  }
+  return content;
+}
+
 function renderMessages() {
   const box = $("messages");
   emptyNode = emptyNode || $("empty");
@@ -107,7 +133,7 @@ function renderMessages() {
     return;
   }
   emptyNode.hidden = true;
-  for (const m of state.messages) box.append(messageNode(m.role, m.display ?? m.content, m.meta));
+  for (const m of state.messages) box.append(messageNode(m.role, m.display ?? (m.role === "user" ? compactUser(m.content) : m.content), m.meta));
   box.scrollTop = box.scrollHeight;
 }
 
@@ -207,8 +233,16 @@ async function send(raw) {
   $("input").value = ""; autosize(); hideSlash();
   if (!state.current) state.current = (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : String(Date.now())).slice(0, 12);
 
-  state.messages.push({ role: "user", content: expandSlash(text) });
-  state.messages[state.messages.length - 1].display = text;
+  let content = expandSlash(text), display = text;
+  if (EMBED && $("ctxToggle")?.checked) {
+    const ctx = await hostContext();
+    const body = ctx && (ctx.selection || ctx.text);
+    if (body) {
+      content = `Archivo \`${ctx.file}\` (${ctx.language}):\n\`\`\`${ctx.language}\n${body}\n\`\`\`\n\n${content}`;
+      display = `📎 ${ctx.file}${ctx.selection ? " (selección)" : ""}\n\n${text}`;
+    }
+  }
+  state.messages.push({ role: "user", content, display });
   renderMessages();
   setHeader($("topTitle").textContent, null);
 
@@ -227,7 +261,8 @@ async function send(raw) {
       method: "POST", signal: state.abort.signal,
       headers: { "Authorization": `Bearer ${state.key}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        stream: true, max_tokens: 2048, conversation_id: state.current, source: "web",
+        stream: true, max_tokens: 2048, conversation_id: state.current, source: EMBED ? "vscode" : "web",
+        workspace: WORKSPACE || undefined,
         messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
       }),
     });
@@ -259,6 +294,7 @@ async function send(raw) {
     const meta = stats ? [stats.model, stats.tokens_per_sec ? `${stats.tokens_per_sec.toFixed(1)} tok/s` : "", `${stats.elapsed}s`].filter(Boolean).join(" · ") : "";
     if (meta) bubble.append(el("div", "msg-meta", meta));
     state.messages.push({ role: "assistant", content: answer });
+    state.lastUpdated = Infinity; // este turno ya esta en pantalla: evita recargarlo desde el servidor
     await loadConversations();
     const cur = state.convs.find((c) => c.id === state.current);
     if (cur) { state.lastUpdated = cur.updated_at; setHeader(cur.title, cur.source); }
@@ -333,9 +369,28 @@ async function init() {
   $("vscodeBtn").onclick = () => { location.href = `vscode://smartorch.smartorch/open?conv=${state.current}`; };
   $("copyMdBtn").onclick = async () => { try { await navigator.clipboard.writeText(await api(`/smartorch/conversations/${state.current}/export`)); toast("Conversación copiada como Markdown"); } catch { toast("No se pudo copiar"); } };
   $("messages").addEventListener("click", async (e) => {
+    const block = e.target.closest(".codeblock");
+    if (!block) return;
+    const code = block.querySelector("code").textContent;
+    const lang = block.querySelector(".code-head span").textContent;
+    if (e.target.closest("[data-insert]")) return toHost({ type: "insert", text: code });
+    if (e.target.closest("[data-newfile]")) return toHost({ type: "newFile", text: code, language: lang === "código" ? undefined : lang });
     const b = e.target.closest("[data-copy]"); if (!b) return;
-    try { await navigator.clipboard.writeText(b.closest(".codeblock").querySelector("code").textContent); b.textContent = "Copiado ✓"; setTimeout(() => (b.textContent = "Copiar"), 1400); } catch {}
+    try { await navigator.clipboard.writeText(code); b.textContent = "Copiado ✓"; setTimeout(() => (b.textContent = "Copiar"), 1400); } catch {}
   });
+
+  if (EMBED) {
+    document.body.classList.add("embed");
+    $("ctxLabel").hidden = false;
+    $("vscodeBtn").style.display = "none";
+    addEventListener("message", (e) => {
+      if (e.source !== parent || !e.data) return;
+      const m = e.data;
+      if (m.type === "context" && host.pending) { const r = host.pending; host.pending = null; r(m); }
+      else if (m.type === "prompt" && typeof m.text === "string") { newChat(); if (m.send) send(m.text); else { $("input").value = m.text; autosize(); $("input").focus(); } }
+      else if (m.type === "open" && typeof m.conv === "string") openConversation(m.conv).catch(() => toast("No encontré esa conversación"));
+    });
+  }
   let st; $("search").addEventListener("input", () => { clearTimeout(st); st = setTimeout(loadConversations, 250); });
 
   const input = $("input");

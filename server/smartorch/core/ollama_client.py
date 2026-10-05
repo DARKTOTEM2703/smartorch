@@ -126,25 +126,33 @@ def chat_stream(
         raise ConnectionError(f"Ollama no disponible: {e}")
 
 
-def generate(model: str, prompt: str, max_tokens: int = 128, temperature: float = 0.1) -> str:
-    """Llamada sincrónica a /api/generate de Ollama (para autocompletado)."""
-    payload = json.dumps({
+def generate(model: str, prompt: str, max_tokens: int = 128, temperature: float = 0.1,
+             suffix: str | None = None, strip: bool = True, stop: list[str] | None = None) -> str:
+    """
+    Llamada sincrona a /api/generate (autocompletado).
+    Con `suffix` el modelo rellena el hueco entre prompt y suffix (FIM) si lo soporta.
+    strip=False conserva la indentacion exacta, necesaria para completar en linea.
+    """
+    body = {
         "model":   model,
         "prompt":  prompt,
         "stream":  False,
         "options": {"temperature": temperature, "num_predict": max_tokens},
-    }).encode()
-
+    }
+    if suffix is not None:
+        body["suffix"] = suffix
+    if stop:
+        body["options"]["stop"] = stop
     req = urllib.request.Request(
         f"{OLLAMA_URL}/api/generate",
-        data=payload,
+        data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=180) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("response", "").strip()
+            text = json.loads(resp.read().decode()).get("response", "")
+            return text.strip() if strip else text
     except urllib.error.URLError as e:
         raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}")
 
