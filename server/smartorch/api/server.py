@@ -284,11 +284,25 @@ async def status():
 
 
 # ── Chat ─────────────────────────────────────────────────────────────────────
+def _derive_conversation(req: ChatRequest, msgs: list[dict], source: Optional[str]) -> None:
+    """Clientes que reenvian todo el historial (VS Code/Continue) no mandan conversation_id:
+    se deriva uno estable del primer mensaje del usuario para agruparlos en el historial."""
+    if req.conversation_id or not source:
+        return
+    import hashlib
+    first = next((m["content"] for m in msgs if m["role"] == "user"), "")
+    if not first.strip():
+        return
+    req.conversation_id = source[:2] + hashlib.sha1(first.encode("utf-8")).hexdigest()[:10]
+    req.source = source[:16]
+
+
 @app.post("/v1/chat/completions", dependencies=[Depends(verify_key)])
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, x_smartorch_source: Optional[str] = Header(None)):
     msgs = [{"role": m.role, "content": m.content} for m in req.messages]
     if not msgs:
         raise HTTPException(status_code=400, detail="messages requeridos")
+    _derive_conversation(req, msgs, x_smartorch_source)
 
     t0 = time.time()
 
