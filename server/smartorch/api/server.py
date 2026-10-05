@@ -13,6 +13,8 @@ import os
 import time
 import uuid
 import logging
+import threading
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
@@ -634,6 +636,46 @@ async def project_analysis_report(root: Optional[str] = None, refresh: bool = Fa
     target = _analysis_root(root)
     profile = await asyncio.to_thread(analysis.get_profile, target, refresh)
     return PlainTextResponse(analysis.report_markdown(profile), media_type="text/markdown; charset=utf-8")
+
+
+_map_jobs: dict[str, "threading.Event"] = {}
+
+
+@app.post("/smartorch/map/build", dependencies=[Depends(verify_key)])
+async def project_map_build(root: Optional[str] = None, model: Optional[str] = None):
+    """Lanza en segundo plano la construccion del mapa jerarquico (lee cada archivo una vez)."""
+    import threading
+    from smartorch.core import projectmap
+    target = str(Path(_analysis_root(root)).resolve())
+    running = _map_jobs.get(target)
+    if running is not None and projectmap.status(target).get("progress", {}).get("running"):
+        return {"started": False, "reason": "ya se está construyendo"}
+    cancel = threading.Event()
+    _map_jobs[target] = cancel
+
+    def work():
+        try:
+            projectmap.build(target, model=model, cancel=cancel)
+        except Exception:  # noqa: BLE001 - el error queda en progress["error"]
+            pass
+
+    threading.Thread(target=work, daemon=True, name="projectmap").start()
+    return {"started": True}
+
+
+@app.get("/smartorch/map/status", dependencies=[Depends(verify_key)])
+async def project_map_status(root: Optional[str] = None):
+    from smartorch.core import projectmap
+    return projectmap.status(_analysis_root(root))
+
+
+@app.post("/smartorch/map/cancel", dependencies=[Depends(verify_key)])
+async def project_map_cancel(root: Optional[str] = None):
+    target = str(Path(_analysis_root(root)).resolve())
+    event = _map_jobs.get(target)
+    if event is not None:
+        event.set()
+    return {"cancelled": event is not None}
 
 
 # ── Historial compartido (web · CLI · editor) ────────────────────────────────

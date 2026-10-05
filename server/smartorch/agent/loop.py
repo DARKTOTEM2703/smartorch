@@ -32,7 +32,7 @@ from typing import Iterator, Optional
 from smartorch.agent import tools as T
 from smartorch.agent import web as W
 from smartorch.config import MODELS, OLLAMA_URL
-from smartorch.core import analysis, datadir, effort as effort_mod, gating
+from smartorch.core import analysis, datadir, effort as effort_mod, gating, projectmap
 
 APPROVAL_TIMEOUT = int(os.environ.get("AGENT_APPROVAL_TIMEOUT", "300"))
 MODES = ("ask", "auto_edits", "readonly")
@@ -396,6 +396,9 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
         overview = analysis.overview(analysis.get_profile(str(root)), 1800)
     except Exception:
         overview = "(sin análisis disponible)"
+    summary = projectmap.render(str(root), 1400)
+    if summary:
+        overview = "Resumen del proyecto (generado leyendo cada archivo):\n" + summary + "\n\n" + overview
 
     extra_auto = ", explore" if (eff.explore and len(_project_files(st)) >= EXPLORE_MIN_FILES) else ""
     needs = "web_search, web_fetch" if web_on else ""

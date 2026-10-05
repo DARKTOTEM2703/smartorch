@@ -763,6 +763,46 @@ def _cmd_serve():
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def _cmd_map(folder: "str | None") -> None:
+    """smartorch map [carpeta]: el modelo lee cada archivo una vez y resume el proyecto (incremental)."""
+    import threading
+    import time
+    from smartorch.core import projectmap
+
+    root = os.path.abspath(folder or os.getcwd())
+    if not os.path.isdir(root):
+        print(_c(C.RED, f"  No existe la carpeta: {root}"))
+        sys.exit(1)
+    print(_c(C.CYAN, f"  Construyendo el mapa de {root} (puede tardar; solo se re-resume lo que cambió)…"))
+    result: dict = {}
+
+    def work():
+        try:
+            result["stats"] = projectmap.build(root)
+        except Exception as e:  # noqa: BLE001
+            result["error"] = str(e)
+
+    th = threading.Thread(target=work, daemon=True)
+    th.start()
+    key = os.path.abspath(root)
+    try:
+        while th.is_alive():
+            p = projectmap.status(key).get("progress") or {}
+            if p:
+                print(f"\r  {p.get('phase', '')}: {p.get('done', 0)}/{p.get('total', 0)}   ", end="", flush=True)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(_c(C.YELLOW, "\n  Interrumpido: lo ya resumido queda guardado; vuelve a correr el comando para continuar."))
+        sys.exit(130)
+    print()
+    if "error" in result:
+        print(_c(C.RED, f"  {result['error']}"))
+        sys.exit(1)
+    s = result["stats"]
+    print(_c(C.GREEN, f"  Listo: {s['summarized']} resumidos, {s['reused']} sin cambios, {s['failed']} fallidos."))
+    print(projectmap.render(root, 1800))
+
+
 def main():
     global SERVER_URL  # noqa: PLW0603
 
@@ -828,6 +868,10 @@ def main():
 
     if args.command == "data":
         _cmd_data(args.input, move=not args.no_move, reset=args.reset)
+        return
+
+    if args.command == "map":
+        _cmd_map(args.cwd or args.input)
         return
 
     # Auto-arrancar servidor para todo lo demás
