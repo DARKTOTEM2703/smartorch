@@ -5,6 +5,7 @@ Lo comparten la web, la CLI y VS Code: una conversacion iniciada en un lado
 aparece en los demas. La ubicacion la decide smartorch.core.datadir.
 """
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -67,8 +68,16 @@ def _db():
             conn.close()
 
 
+_ATTACHED = re.compile(r"^Archivo `([^`]+)`[^\n]*:\n```[\s\S]*?```\s*", re.MULTILINE)
+
+
 def _title_from(text: str) -> str:
-    one_line = " ".join((text or "").split())
+    """Titulo legible: ignora el contexto adjunto (archivo + codigo) y usa lo que el usuario escribio."""
+    cleaned = _ATTACHED.sub("", text or "", count=1).strip()
+    if not cleaned:
+        m = re.match(r"^Archivo `([^`]+)`", text or "")
+        cleaned = f"Archivo {m.group(1)}" if m else ""
+    one_line = " ".join(cleaned.split())
     return (one_line[:60] + "…") if len(one_line) > 60 else (one_line or "Conversación")
 
 
@@ -104,12 +113,12 @@ def add_message(conv_id: str, role: str, content: str, source: str = "api") -> N
 
 
 def save_turn(conv_id: str, source: str, user_text: str, assistant_text: str,
-              workspace: Optional[str] = None) -> None:
+              workspace: Optional[str] = None, title: Optional[str] = None) -> None:
     """Guarda un intercambio, creando la conversacion si aun no existe."""
     with _db() as conn:
         exists = conn.execute("SELECT 1 FROM conversations WHERE id = ?", (conv_id,)).fetchone()
     if not exists:
-        create_conversation(_title_from(user_text), source, workspace, conv_id)
+        create_conversation(_title_from(title) if title else _title_from(user_text), source, workspace, conv_id)
     if user_text:
         add_message(conv_id, "user", user_text, source)
     if assistant_text:

@@ -6,12 +6,16 @@ const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls)
 
 const state = { key: "", convs: [], current: null, messages: [], streaming: false, abort: null, lastUpdated: 0 };
 
-/* ── Modo embebido (panel de VS Code) ───────────────────────── */
+/* ── Modo nativo (webview de VS Code) o embebido (iframe) ───── */
 const params = new URLSearchParams(location.search);
-const EMBED = params.get("embed") === "vscode";
-const WORKSPACE = params.get("workspace") || "";
+const NATIVE = !!window.SmartOrchNative;                 // lo define la extension de VS Code
+const EMBED = NATIVE || params.get("embed") === "vscode";
+const WORKSPACE = (NATIVE && window.SmartOrchNative.workspace) || params.get("workspace") || "";
 const host = { pending: null };
-function toHost(msg) { if (EMBED && parent !== window) parent.postMessage({ smartorch: true, ...msg }, "*"); }
+function toHost(msg) {
+  if (NATIVE) window.SmartOrchNative.post({ smartorch: true, ...msg });
+  else if (EMBED && parent !== window) parent.postMessage({ smartorch: true, ...msg }, "*");
+}
 function hostContext() {
   return new Promise((resolve) => {
     host.pending = resolve;
@@ -19,6 +23,21 @@ function hostContext() {
     setTimeout(() => { if (host.pending === resolve) { host.pending = null; resolve(null); } }, 1500);
   });
 }
+
+/* prompt()/confirm() no existen en los webviews de VS Code: se delegan a sus dialogos nativos */
+const dialogs = new Map();
+let dialogSeq = 0;
+function askHost(kind, text, value) {
+  return new Promise((resolve) => {
+    const id = ++dialogSeq;
+    dialogs.set(id, resolve);
+    toHost({ type: "dialog", id, kind, text, value });
+  });
+}
+const dialog = {
+  prompt: (text, value) => (NATIVE ? askHost("prompt", text, value) : Promise.resolve(window.prompt(text, value))),
+  confirm: (text) => (NATIVE ? askHost("confirm", text) : Promise.resolve(window.confirm(text))),
+};
 
 /* ── Slash commands ─────────────────────────────────────────── */
 const SLASH = {
@@ -44,13 +63,43 @@ const STARTERS = [
   ["Mi proyecto", "¿Cómo está organizado este proyecto y por dónde debería empezar a leerlo?", "Usa el RAG del workspace"],
 ];
 
-/* ── API ────────────────────────────────────────────────────── */
-async function api(path, opts = {}) {
-  const r = await fetch(path, { ...opts, headers: { "Authorization": `Bearer ${state.key}`, "Content-Type": "application/json", ...(opts.headers || {}) } });
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-  const ct = r.headers.get("content-type") || "";
-  return ct.includes("json") ? r.json() : r.text();
+/* ── Transporte ─────────────────────────────────────────────── */
+function parseSse(onEvent) {
+  let buf = "";
+  const dec = new TextDecoder();
+  return (chunk) => {
+    buf += dec.decode(chunk, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 2);
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (payload === "[DONE]") continue;
+      try { onEvent(JSON.parse(payload)); } catch { /* evento incompleto */ }
+    }
+  };
 }
+
+const webTransport = {
+  async request(path, opts = {}) {
+    const r = await fetch(path, { ...opts, headers: { "Authorization": `Bearer ${state.key}`, "Content-Type": "application/json", ...(opts.headers || {}) } });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    return (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
+  },
+  async stream(path, body, onEvent, signal) {
+    const r = await fetch(path, { method: "POST", signal, headers: { "Authorization": `Bearer ${state.key}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    const reader = r.body.getReader();
+    const feed = parseSse(onEvent);
+    for (;;) { const { value, done } = await reader.read(); if (done) break; feed(value); }
+  },
+  async config() { return (await fetch("/smartorch/ui-config")).json(); },
+  async health() { const r = await fetch("/health", { signal: AbortSignal.timeout(6000) }); return r.json(); },
+};
+
+// La extension de VS Code define window.SmartOrchNative.transport (hace las peticiones por nosotros)
+const transport = (NATIVE && window.SmartOrchNative.transport) || webTransport;
+const api = (path, opts) => transport.request(path, opts);
 
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.hidden = false;
@@ -166,8 +215,8 @@ function renderList() {
     const actions = el("div", "conv-actions");
     const ren = el("button", "icon-btn", "✎"); ren.title = "Renombrar";
     const del = el("button", "icon-btn", "🗑"); del.title = "Eliminar";
-    ren.onclick = async (e) => { e.stopPropagation(); const t = prompt("Nuevo título", c.title); if (t) { await api(`/smartorch/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ title: t }) }); loadConversations(); } };
-    del.onclick = async (e) => { e.stopPropagation(); if (confirm("¿Eliminar esta conversación?")) { await api(`/smartorch/conversations/${c.id}`, { method: "DELETE" }); if (state.current === c.id) newChat(); loadConversations(); } };
+    ren.onclick = async (e) => { e.stopPropagation(); const t = await dialog.prompt("Nuevo título", c.title); if (t) { await api(`/smartorch/conversations/${c.id}`, { method: "PATCH", body: JSON.stringify({ title: t }) }); loadConversations(); } };
+    del.onclick = async (e) => { e.stopPropagation(); if (await dialog.confirm("¿Eliminar esta conversación?")) { await api(`/smartorch/conversations/${c.id}`, { method: "DELETE" }); if (state.current === c.id) newChat(); loadConversations(); } };
     actions.append(ren, del);
     row.append(main, actions);
     row.onclick = () => { openConversation(c.id); $("sidebar").classList.remove("open"); };
@@ -257,33 +306,15 @@ async function send(raw) {
   state.abort = new AbortController();
   setBusy(true);
   try {
-    const resp = await fetch("/v1/chat/completions", {
-      method: "POST", signal: state.abort.signal,
-      headers: { "Authorization": `Bearer ${state.key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        stream: true, max_tokens: 2048, conversation_id: state.current, source: EMBED ? "vscode" : "web",
-        workspace: WORKSPACE || undefined,
-        messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
-      }),
-    });
-    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
-    const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 2);
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (payload === "[DONE]") continue;
-        let ev; try { ev = JSON.parse(payload); } catch { continue; }
-        if (ev.type === "status") markStep(ev.step);
-        else if (ev.type === "done") stats = ev;
-        else if (ev.choices?.[0]?.delta?.content) { answer += ev.choices[0].delta.content; if (!raf) raf = requestAnimationFrame(paint); }
-      }
-    }
+    await transport.stream("/v1/chat/completions", {
+      stream: true, max_tokens: 2048, conversation_id: state.current, source: EMBED ? "vscode" : "web",
+      workspace: WORKSPACE || undefined, title: text,
+      messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
+    }, (ev) => {
+      if (ev.type === "status") markStep(ev.step);
+      else if (ev.type === "done") stats = ev;
+      else if (ev.choices?.[0]?.delta?.content) { answer += ev.choices[0].delta.content; if (!raf) raf = requestAnimationFrame(paint); }
+    }, state.abort.signal);
   } catch (e) {
     if (e.name !== "AbortError") answer += `\n\n**Error:** ${e.message}`;
   } finally {
@@ -325,8 +356,7 @@ function pickSlash(k) { $("input").value = `/${k} `; hideSlash(); $("input").foc
 async function checkHealth() {
   const box = $("status");
   try {
-    const r = await fetch("/health", { signal: AbortSignal.timeout(6000) });
-    const h = await r.json();
+    const h = await transport.health();
     box.className = "status ok";
     $("statusText").textContent = `Conectado · ${h.rag_mode === "semantic" ? "RAG semántico" : "RAG TF-IDF"}`;
   } catch { box.className = "status bad"; $("statusText").textContent = "Sin conexión con el servidor"; }
@@ -337,12 +367,12 @@ function applyTheme(t) { if (t) document.documentElement.dataset.theme = t; }
 async function init() {
   try { applyTheme(localStorage.getItem("smartorch_theme")); } catch {}
   try {
-    const cfg = await (await fetch("/smartorch/ui-config")).json();
+    const cfg = await transport.config();
     state.key = cfg.api_key || "";
     state.auth = cfg.auth !== false;
     if (cfg.donate_url) { const d = $("donate"); d.href = cfg.donate_url; d.hidden = false; }
   } catch {}
-  if (!state.key && state.auth !== false) {
+  if (!state.key && state.auth !== false && !NATIVE) {
     try { state.key = localStorage.getItem("smartorch_key") || ""; } catch {}
     if (!state.key) {
       state.key = (prompt("Este servidor pide una API key (SMARTORCH_API_KEY):") || "").trim();
@@ -383,9 +413,11 @@ async function init() {
     document.body.classList.add("embed");
     $("ctxLabel").hidden = false;
     $("vscodeBtn").style.display = "none";
+    if (NATIVE) $("themeBtn").style.display = "none";
     addEventListener("message", (e) => {
-      if (e.source !== parent || !e.data) return;
+      if ((!NATIVE && e.source !== parent) || !e.data) return;
       const m = e.data;
+      if (m.type === "dialogResult") { const r = dialogs.get(m.id); dialogs.delete(m.id); if (r) r(m.value); return; }
       if (m.type === "context" && host.pending) { const r = host.pending; host.pending = null; r(m); }
       else if (m.type === "prompt" && typeof m.text === "string") { newChat(); if (m.send) send(m.text); else { $("input").value = m.text; autosize(); $("input").focus(); } }
       else if (m.type === "open" && typeof m.conv === "string") openConversation(m.conv).catch(() => toast("No encontré esa conversación"));
@@ -414,6 +446,7 @@ async function init() {
   setInterval(checkHealth, 15000);
   setInterval(loadConversations, 10000);
   input.focus();
+  toHost({ type: "ready" }); // el editor ya puede enviarnos prompts y conversaciones
 }
 
 init();

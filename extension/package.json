@@ -26,6 +26,7 @@
     },
     "commands": [
       { "command": "smartorch.openChat", "title": "Abrir chat", "category": "SmartOrch" },
+      { "command": "smartorch.openChatTab", "title": "Abrir chat en una pestaña", "category": "SmartOrch" },
       { "command": "smartorch.explain", "title": "/explain — Explicar código", "category": "SmartOrch" },
       { "command": "smartorch.fix", "title": "/fix — Corregir bugs", "category": "SmartOrch" },
       { "command": "smartorch.refactor", "title": "/refactor — Refactorizar", "category": "SmartOrch" },
@@ -130,9 +131,10 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./",
+    "sync-ui": "node scripts/sync-ui.js",
+    "compile": "node scripts/clean.js && node scripts/sync-ui.js && tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package --no-dependencies"
+    "package": "npm run compile && vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -14,11 +14,10 @@ from smartorch.core.datadir import INDEX_FILE, migrate_legacy
 
 migrate_legacy()
 
-EXTENSIONS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java',
-              '.c', '.cpp', '.h', '.cs', '.rb', '.php', '.md', '.yaml', '.yml', '.json'}
+from smartorch.rag.chunker import SKIP_DIRS as _CHUNKER_SKIP_DIRS, is_indexable
 
-SKIP_DIRS = {'__pycache__', '.git', 'node_modules', 'venv', '.venv', 'dist',
-             'build', '.build', '.dist', 'compilados', 'onefile-build'}
+# Mismas reglas que el RAG semantico: una sola fuente de verdad sobre que se indexa
+SKIP_DIRS = _CHUNKER_SKIP_DIRS | {'.build', '.dist', 'compilados', 'onefile-build'}
 
 CHUNK_SIZE = 60   # líneas por chunk
 CHUNK_OVERLAP = 10
@@ -67,8 +66,7 @@ class CodeIndex:
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
 
             for fname in filenames:
-                ext = Path(fname).suffix.lower()
-                if ext not in EXTENSIONS:
+                if not is_indexable(Path(fname)):
                     continue
                 fpath = os.path.join(dirpath, fname)
                 rel   = os.path.relpath(fpath, root)

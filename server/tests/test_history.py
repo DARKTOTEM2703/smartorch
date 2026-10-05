@@ -52,6 +52,18 @@ class HistoryTests(unittest.TestCase):
         self.assertIn("print(1)", md)
         self.assertIsNone(history.export_markdown("no-existe"))
 
+    def test_title_ignores_attached_file_context(self):
+        attached = "Archivo `demo.py` (python):\n```python\ndef a(): pass\n```\n\nexplica esto"
+        self.assertEqual(history._title_from(attached), "explica esto")
+        only_file = "Archivo `demo.py` (python):\n```python\nx\n```"
+        self.assertEqual(history._title_from(only_file), "Archivo demo.py")
+        history.save_turn("t6", "vscode", attached, "ok")
+        self.assertEqual(history.get_conversation("t6")["title"], "explica esto")
+
+    def test_explicit_title_wins(self):
+        history.save_turn("t7", "web", "/explain\n\nPrompt largo de plantilla", "ok", title="/explain")
+        self.assertEqual(history.get_conversation("t7")["title"], "/explain")
+
 
 if __name__ == "__main__":
     unittest.main()

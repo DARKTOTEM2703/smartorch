@@ -7,17 +7,43 @@ import hashlib
 from pathlib import Path
 
 EXTENSIONS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx",
-    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".cs",
-    ".rb", ".php", ".sh", ".ps1", ".bat",
-    ".md", ".yaml", ".yml", ".json", ".toml", ".ini", ".conf",
+    # lenguajes
+    ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".kt", ".kts", ".scala",
+    ".c", ".cpp", ".cc", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".dart", ".lua", ".r", ".ex", ".exs",
+    ".hs", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".sql",
+    # web
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
+    # configuracion y documentacion
+    ".md", ".rst", ".txt", ".yaml", ".yml", ".json", ".toml", ".ini", ".conf", ".cfg", ".xml", ".gradle",
+    ".proto", ".graphql", ".tf",
+}
+
+# Archivos sin extension (o con nombre especial) que si aportan contexto
+SPECIAL_NAMES = {
+    "dockerfile", "makefile", "procfile", "gemfile", "rakefile", "jenkinsfile", "vagrantfile",
+    ".gitignore", ".dockerignore", ".editorconfig", ".env.example",
 }
 
 SKIP_DIRS = {
-    "node_modules", ".git", "__pycache__", "venv", ".venv",
-    "dist", "build", "out", ".smartorch_db", ".next", "target",
-    "vendor", "bower_components", ".idea", ".vscode",
+    "node_modules", ".git", "__pycache__", "venv", ".venv", "env",
+    "dist", "build", "out", ".smartorch_db", ".next", ".nuxt", "target", "coverage",
+    "vendor", "bower_components", ".idea", ".vscode", ".pytest_cache", ".mypy_cache", ".tox",
+    "site-packages", ".gradle", ".dart_tool", "Pods", "DerivedData", ".git_old",
 }
+
+# Archivos generados o enormes que solo meten ruido
+SKIP_FILES = {
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "pipfile.lock",
+    "composer.lock", "cargo.lock", "gemfile.lock", "go.sum",
+}
+SKIP_SUFFIXES = (".min.js", ".min.css", ".map", ".lock", ".bundle.js")
+
+
+def is_indexable(path: Path) -> bool:
+    name = path.name.lower()
+    if name in SKIP_FILES or name.endswith(SKIP_SUFFIXES):
+        return False
+    return path.suffix.lower() in EXTENSIONS or name in SPECIAL_NAMES
 
 CHUNK_LINES   = 60
 OVERLAP_LINES = 15
@@ -41,7 +67,7 @@ def chunk_file(path: str, root: str = "") -> list[dict]:
 
     chunks = []
     step   = CHUNK_LINES - OVERLAP_LINES
-    relpath = _short_path(path)
+    relpath = _relative_path(path, root)
 
     for i in range(0, len(lines), step):
         segment = lines[i : i + CHUNK_LINES]
@@ -80,13 +106,26 @@ def index_directory(root: str) -> list[dict]:
 
         for fname in filenames:
             fpath = Path(dirpath) / fname
-            if fpath.suffix.lower() not in EXTENSIONS:
+            if not is_indexable(fpath):
                 continue
-            if fpath.stat().st_size > MAX_FILE_SIZE:
+            try:
+                if fpath.stat().st_size > MAX_FILE_SIZE:
+                    continue
+            except OSError:
                 continue
             all_chunks.extend(chunk_file(str(fpath), str(root_path)))
 
     return all_chunks
+
+
+def _relative_path(path: str, root: str) -> str:
+    """Ruta relativa al workspace (con /); sin root cae en los ultimos 3 componentes."""
+    if root:
+        try:
+            return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+        except ValueError:
+            pass
+    return _short_path(path)
 
 
 def _short_path(path: str) -> str:

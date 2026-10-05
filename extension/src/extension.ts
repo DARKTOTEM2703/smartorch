@@ -49,6 +49,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("smartorch.openChat", () =>
       vscode.commands.executeCommand("workbench.view.extension.smartorch"),
     ),
+    vscode.commands.registerCommand("smartorch.openChatTab", () => panel.openTab()),
     vscode.commands.registerCommand("smartorch.openConversation", (id: string) => panel.openConversation(id)),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("smartorch.apiUrl")) panel.refresh();

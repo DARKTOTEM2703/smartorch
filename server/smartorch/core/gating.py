@@ -20,8 +20,10 @@ _CODE_CUES = re.compile(
 )
 _CAMEL_CASE = re.compile(r"\b[a-z]+[A-Z][A-Za-z]+\b")
 _PROJECT_WORDS = re.compile(
-    r"\b(?:proyecto|project|repo|repositorio|codebase|workspace|archivo|file|funci[oó]n|function|clase|class"
-    r"|m[eé]todo|m[oó]dulo|endpoint|servidor|server|bug|refactor\w*|tests?|commit|import|variable|build)\b",
+    r"\b(?:proyectos?|projects?|repo(?:sitorios?)?|codebase|workspace|archivos?|files?|carpetas?|folders?"
+    r"|directorios?|directory|directories|estructura|[aá]rbol|funci[oó]n(?:es)?|functions?|clases?|class(?:es)?"
+    r"|m[eé]todos?|m[oó]dulos?|endpoints?|servidor|server|bugs?|refactor\w*|tests?|commits?|imports?|variables?"
+    r"|build|c[oó]digo|code|dependencias|dependencies)\b",
     re.IGNORECASE,
 )
 _CHITCHAT = re.compile(

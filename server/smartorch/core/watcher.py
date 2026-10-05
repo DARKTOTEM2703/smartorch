@@ -4,6 +4,7 @@ Sin dependencias externas: usa threading + os.stat polling
 """
 import os
 import threading
+from pathlib import Path
 import time
 import logging
 from smartorch.core import workspaces
@@ -14,18 +15,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = 8   # segundos entre polls
 DEBOUNCE      = 3   # esperar N segundos sin cambios antes de reindexar
 
-WATCH_EXTENSIONS = {
-    '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java',
-    '.c', '.cpp', '.h', '.cs', '.rb', '.php', '.md', '.yaml',
-    '.yml', '.json', '.toml', '.env', '.sh', '.ps1', '.bat',
-    '.html', '.css', '.scss', '.vue', '.svelte', '.kt', '.swift',
-}
-
-SKIP_DIRS = {
-    '__pycache__', '.git', 'node_modules', 'venv', '.venv',
-    'dist', 'build', '.build', '.dist', 'compilados',
-    'onefile-build', '.idea', '.vscode',
-}
+from smartorch.rag.chunker import SKIP_DIRS, is_indexable
 
 
 class WorkspaceWatcher:
@@ -44,7 +34,7 @@ class WorkspaceWatcher:
         for dirpath, dirnames, filenames in os.walk(self.root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
             for fname in filenames:
-                if os.path.splitext(fname)[1].lower() in WATCH_EXTENSIONS:
+                if is_indexable(Path(fname)):
                     fpath = os.path.join(dirpath, fname)
                     if os.path.abspath(fpath) == own_index:
                         continue  # el indice propio no debe disparar reindexados

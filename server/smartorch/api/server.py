@@ -125,6 +125,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     source:          Optional[str] = "api"
     workspace:       Optional[str] = None
+    title:           Optional[str] = None   # titulo sugerido para una conversacion nueva
 
 
 def _last_user_text(msgs: list[dict]) -> str:
@@ -138,7 +139,7 @@ def _persist_turn(req: "ChatRequest", msgs: list[dict], answer: str) -> None:
     if not req.conversation_id:
         return
     try:
-        history.save_turn(req.conversation_id, req.source or "api", _last_user_text(msgs), answer, req.workspace)
+        history.save_turn(req.conversation_id, req.source or "api", _last_user_text(msgs), answer, req.workspace, req.title)
     except Exception as e:
         logger.warning(f"[HISTORY] no se pudo guardar: {e}")
 
