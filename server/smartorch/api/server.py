@@ -23,7 +23,7 @@ import asyncio
 
 from smartorch.config import HOST, PORT, API_KEY, MODELS, AGENT_WORK_DIR, model_context_window
 from smartorch.core import ollama_client as ollama, indexer
-from smartorch.core import orchestrator
+from smartorch.core import orchestrator, history, gating
 from smartorch.ui.web import HTML
 
 logger = logging.getLogger(__name__)
@@ -114,6 +114,28 @@ class ChatRequest(BaseModel):
     max_tokens:  Optional[int]   = 2048
     temperature: Optional[float] = 0.3
     stream:      Optional[bool]  = False
+    # Extensiones SmartOrch: si viene conversation_id el intercambio se guarda
+    # en el historial compartido (web, CLI y editor).
+    conversation_id: Optional[str] = None
+    source:          Optional[str] = "api"
+    workspace:       Optional[str] = None
+
+
+def _last_user_text(msgs: list[dict]) -> str:
+    for m in reversed(msgs):
+        if m.get("role") == "user":
+            return m.get("content", "")
+    return ""
+
+
+def _persist_turn(req: "ChatRequest", msgs: list[dict], answer: str) -> None:
+    if not req.conversation_id:
+        return
+    try:
+        history.save_turn(req.conversation_id, req.source or "api", _last_user_text(msgs), answer, req.workspace)
+    except Exception as e:
+        logger.warning(f"[HISTORY] no se pudo guardar: {e}")
+
 
 class CompletionRequest(BaseModel):
     prompt:      str
@@ -254,7 +276,7 @@ async def chat(req: ChatRequest):
 
     if req.stream:
         return StreamingResponse(
-            _stream_chat(msgs, req.max_tokens or 2048, req.temperature or 0.3),
+            _stream_chat(msgs, req.max_tokens or 2048, req.temperature or 0.3, req),
             media_type="text/event-stream",
         )
 
@@ -263,6 +285,7 @@ async def chat(req: ChatRequest):
         temperature=req.temperature or 0.3,
         max_tokens=req.max_tokens or 2048,
     )
+    _persist_turn(req, msgs, result["content"])
 
     prompt_tokens = result.get("prompt_tokens") or result.get("context_chars", 0) // 4
     compl_tokens  = result.get("completion_tokens") or len(result["content"]) // 4
@@ -300,10 +323,11 @@ async def chat(req: ChatRequest):
     }
 
 
-async def _stream_chat(msgs, max_tokens, temperature):
+async def _stream_chat(msgs, max_tokens, temperature, req: Optional["ChatRequest"] = None):
     import json
     import time
     t0 = time.time()
+    collected: list[str] = []
     try:
         from smartorch.core import router, chain, compressor
 
@@ -351,9 +375,12 @@ async def _stream_chat(msgs, max_tokens, temperature):
                 stream_compl_tokens  = chunk.get("completion_tokens", 0)
                 stream_tok_per_sec   = chunk.get("tokens_per_sec", 0.0)
             else:
+                collected.append(chunk)
                 data = json.dumps({"choices": [{"delta": {"content": chunk}, "finish_reason": None}]})
                 yield f"data: {data}\n\n"
 
+        if req is not None:
+            _persist_turn(req, msgs, "".join(collected))
         _record_usage(stream_prompt_tokens, stream_compl_tokens)
 
         # context window usage
@@ -413,6 +440,79 @@ async def index_workspace(req: IndexRequest):
     }
 
 
+# ── Historial compartido (web · CLI · editor) ────────────────────────────────
+class ConversationCreate(BaseModel):
+    title:     Optional[str] = ""
+    source:    Optional[str] = "api"
+    workspace: Optional[str] = None
+    messages:  Optional[list[Message]] = None
+
+
+class ConversationRename(BaseModel):
+    title: str
+
+
+class MessageCreate(BaseModel):
+    role:    str
+    content: str
+    source:  Optional[str] = "api"
+
+
+@app.get("/smartorch/conversations", dependencies=[Depends(verify_key)])
+async def list_conversations(q: str = "", limit: int = 100):
+    return {"conversations": await asyncio.to_thread(history.list_conversations, limit, q)}
+
+
+@app.post("/smartorch/conversations", dependencies=[Depends(verify_key)])
+async def create_conversation(body: ConversationCreate):
+    def _create():
+        conv = history.create_conversation(body.title or "", body.source or "api", body.workspace)
+        for m in body.messages or []:
+            history.add_message(conv["id"], m.role, m.content, body.source or "api")
+        return history.get_conversation(conv["id"])
+    return await asyncio.to_thread(_create)
+
+
+@app.get("/smartorch/conversations/{conv_id}", dependencies=[Depends(verify_key)])
+async def get_conversation(conv_id: str):
+    conv = await asyncio.to_thread(history.get_conversation, conv_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+    return conv
+
+
+@app.get("/smartorch/conversations/{conv_id}/export", dependencies=[Depends(verify_key)])
+async def export_conversation(conv_id: str):
+    from fastapi.responses import PlainTextResponse
+    md = await asyncio.to_thread(history.export_markdown, conv_id)
+    if md is None:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+    return PlainTextResponse(md, media_type="text/markdown; charset=utf-8")
+
+
+@app.patch("/smartorch/conversations/{conv_id}", dependencies=[Depends(verify_key)])
+async def rename_conversation(conv_id: str, body: ConversationRename):
+    if not await asyncio.to_thread(history.rename_conversation, conv_id, body.title):
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+    return {"status": "ok"}
+
+
+@app.delete("/smartorch/conversations/{conv_id}", dependencies=[Depends(verify_key)])
+async def delete_conversation(conv_id: str):
+    if not await asyncio.to_thread(history.delete_conversation, conv_id):
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+    return {"status": "ok"}
+
+
+@app.post("/smartorch/conversations/{conv_id}/messages", dependencies=[Depends(verify_key)])
+async def add_conversation_message(conv_id: str, body: MessageCreate):
+    def _add():
+        history.create_conversation("", body.source or "api", None, conv_id)
+        history.add_message(conv_id, body.role, body.content, body.source or "api")
+    await asyncio.to_thread(_add)
+    return {"status": "ok"}
+
+
 # ── Helpers RAG ───────────────────────────────────────────────────────────────
 def _rag_chunk_count() -> int:
     try:
@@ -427,7 +527,7 @@ def _current_rag_mode() -> str:
 def _get_rag_context(msgs: list[dict]) -> str:
     """Intenta RAG semántico; fallback a TF-IDF."""
     user_text = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
-    if not user_text or len(user_text) < 10:
+    if not gating.wants_project_context(user_text):
         return ""
     try:
         from smartorch.rag.retriever import search_formatted

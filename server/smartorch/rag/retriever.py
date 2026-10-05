@@ -3,6 +3,7 @@ Retriever — interfaz unificada de búsqueda RAG.
 Usa ChromaDB semántico si está disponible, TF-IDF como fallback.
 """
 from .store import search as semantic_search, collection_ready
+from smartorch.core.gating import MIN_RAG_SCORE
 
 
 def search(query: str, top_k: int = 5) -> list[dict]:
@@ -18,7 +19,7 @@ def search_formatted(query: str, top_k: int = 5, max_chars: int = 3000) -> str:
     if not collection_ready():
         return ""
 
-    results = search(query, top_k=top_k)
+    results = [r for r in search(query, top_k=top_k) if r["score"] >= MIN_RAG_SCORE]
     if not results:
         return ""
 

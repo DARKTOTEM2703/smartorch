@@ -11,6 +11,13 @@ Técnicas implementadas:
 """
 import re
 
+from smartorch.core import gating
+
+
+def _last_user_text(messages: list[dict]) -> str:
+    return next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+
+
 # ── Anti-alucinación — cláusula en todos los prompts ─────────────────────────
 _NO_HALLUCINATION = (
     "REGLA CRITICA: Si no sabes algo con certeza, di exactamente "
@@ -294,7 +301,9 @@ def inject_cot(messages: list[dict], task_type: str) -> list[dict]:
     if task_type != "security" and _is_security(messages):
         task_type = "security"
 
-    if task_type == "code":
+    if task_type in ("chat", "general") and gating.is_trivial(_last_user_text(messages)):
+        system_prompt = gating.MINIMAL_SYSTEM
+    elif task_type == "code":
         stack = detect_stack(messages)
         system_map_code = {
             "web":           SYSTEM_CODE_WEB,

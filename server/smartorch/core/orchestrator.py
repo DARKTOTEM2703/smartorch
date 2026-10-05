@@ -12,7 +12,7 @@ Pipeline:
 import re
 import logging
 import concurrent.futures
-from smartorch.core import router, chain, compressor, ollama_client as ollama, indexer, cache as resp_cache
+from smartorch.core import router, chain, compressor, gating, ollama_client as ollama, indexer, cache as resp_cache
 from smartorch.config import MAX_TOKENS_OUT, MODEL_CONTEXT_CHARS, MODELS, SPECULATIVE_ENABLED, SPECULATIVE_MIN_TOKENS
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,7 @@ def _get_rag_context(messages: list[dict]) -> str:
             user_text = content.strip()
             break
 
-    if not user_text or len(user_text) < 8:
+    if not gating.wants_project_context(user_text):
         return ""
 
     # Intentar RAG semántico primero

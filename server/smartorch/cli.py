@@ -19,6 +19,8 @@ Uso:
   smartorch doc archivo.py          # Generar documentación
   smartorch status                  # Estado del servidor + métricas
   smartorch serve                   # Iniciar el servidor SmartOrch
+  smartorch history                 # Conversaciones guardadas (web · CLI · editor)
+  smartorch resume [id]             # Retomar una conversación (la última por defecto)
 """
 import sys
 import os
@@ -40,6 +42,16 @@ SERVER_URL   = os.environ.get("SMARTORCH_URL", "http://localhost:8080")
 API_KEY      = os.environ.get("SMARTORCH_API_KEY", "smartorch-local-key")
 SERVER_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".smartorch_history")
+
+# Conversacion activa en el historial compartido (web · CLI · editor)
+_conv_id: str | None = None
+
+
+def _new_conversation() -> str:
+    global _conv_id  # noqa: PLW0603
+    import uuid
+    _conv_id = uuid.uuid4().hex[:12]
+    return _conv_id
 
 # ── Colores ANSI (sin dependencias externas) ──────────────────────────────────
 
@@ -248,6 +260,8 @@ def _send_chat(
         "stream":    stream,
         "max_tokens": 2048,
     }
+    if _conv_id:
+        body.update({"conversation_id": _conv_id, "source": "cli", "workspace": os.getcwd()})
 
     if not stream:
         result = _request("POST", "/v1/chat/completions", body, timeout=120)
@@ -405,7 +419,43 @@ def _run_command(cmd: str, content: str) -> str:
 
 # ── REPL interactivo ──────────────────────────────────────────────────────────
 
-def _repl():
+def _list_conversations(limit: int = 15) -> list[dict]:
+    data = _request("GET", f"/smartorch/conversations?limit={limit}", timeout=10)
+    return data.get("conversations", [])
+
+
+def _print_conversations(convs: list[dict]) -> None:
+    if not convs:
+        print(_c(C.GRAY, "  Aún no hay conversaciones guardadas."))
+        return
+    print()
+    for c in convs:
+        when = time.strftime("%d/%m %H:%M", time.localtime(c.get("updated_at", 0)))
+        src = _c(C.MAGENTA, f"{c.get('source', '?'):<6}")
+        print(f"  {_c(C.CYAN, c['id'])}  {src} {_c(C.GRAY, when)}  {c['title']}")
+    print()
+    print(_c(C.GRAY, "  Continúa una con: smartorch resume <id>   (o /resume <id> en el chat)"))
+
+
+def _load_conversation(conv_id: str) -> list[dict] | None:
+    """Carga una conversación del historial compartido y la deja activa."""
+    global _conv_id  # noqa: PLW0603
+    if conv_id == "latest":
+        convs = _list_conversations(1)
+        if not convs:
+            return None
+        conv_id = convs[0]["id"]
+    try:
+        conv = _request("GET", f"/smartorch/conversations/{conv_id}", timeout=10)
+    except Exception:
+        return None
+    _conv_id = conv["id"]
+    print(_c(C.GREEN, f"  Retomando: {conv['title']}"), _c(C.GRAY, f"({conv.get('message_count', 0)} mensajes)"))
+    return [{"role": m["role"], "content": m["content"]}
+            for m in conv.get("messages", []) if m["role"] in ("user", "assistant")]
+
+
+def _repl(resume_id: str | None = None):
     """REPL interactivo con historial de conversación."""
     _print_banner()
 
@@ -420,6 +470,15 @@ def _repl():
     print()
 
     conversation: list[dict] = []
+    if resume_id:
+        loaded = _load_conversation(resume_id)
+        if loaded is None:
+            print(_c(C.YELLOW, "  No encontré esa conversación; empiezo una nueva."))
+            _new_conversation()
+        else:
+            conversation = loaded
+    else:
+        _new_conversation()
     _load_readline()
 
     while True:
@@ -439,7 +498,27 @@ def _repl():
 
         if raw == "/clear":
             conversation.clear()
-            print(_c(C.GRAY, "  Conversación limpiada."))
+            _new_conversation()
+            print(_c(C.GRAY, "  Conversación nueva."))
+            continue
+
+        if raw == "/list":
+            _print_conversations(_list_conversations())
+            continue
+
+        if raw.startswith("/resume"):
+            target = raw.partition(" ")[2].strip() or "latest"
+            loaded = _load_conversation(target)
+            if loaded is None:
+                print(_c(C.YELLOW, "  No encontré esa conversación (usa /list)."))
+            else:
+                conversation = loaded
+            continue
+
+        if raw == "/open":
+            import webbrowser
+            webbrowser.open(f"{SERVER_URL}/?c={_conv_id}")
+            print(_c(C.GRAY, "  Abierta en el navegador."))
             continue
 
         if raw == "/help":
@@ -513,8 +592,11 @@ def _load_readline():
 
 def _print_help():
     cmds = [
-        ("/clear",       "Borrar conversación"),
-        ("/history",     "Ver historial de mensajes"),
+        ("/clear",       "Nueva conversación"),
+        ("/history",     "Ver mensajes de esta conversación"),
+        ("/list",        "Conversaciones guardadas (web · CLI · editor)"),
+        ("/resume [id]", "Retomar una conversación (la última si no hay id)"),
+        ("/open",        "Abrir esta conversación en la web"),
         ("/status",      "Estado del servidor y métricas"),
         ("/help",        "Este mensaje"),
         ("/exit",        "Salir"),
@@ -672,6 +754,16 @@ def main():
         print(_c(C.RED, "  No se puede conectar al servidor SmartOrch."))
         print(_c(C.GRAY, "  Usa 'smartorch serve' para iniciarlo."))
         sys.exit(1)
+
+    if args.command == "history":
+        _print_conversations(_list_conversations(30))
+        return
+
+    if args.command == "resume":
+        _repl(resume_id=args.input or "latest")
+        return
+
+    _new_conversation()  # cada llamada suelta queda guardada en el historial compartido
 
     cmd   = args.command
     fpath = args.file or args.input
