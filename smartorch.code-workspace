@@ -1,0 +1,23 @@
+{
+  "folders": [
+    {
+      "name": "🧠 SmartOrch Server (motor)",
+      "path": "server"
+    },
+    {
+      "name": "🔌 SmartOrch VS Code Extension",
+      "path": "extension"
+    }
+  ],
+  "settings": {
+    "workbench.colorCustomizations": {
+      "titleBar.activeBackground": "#0d1117",
+      "titleBar.activeForeground": "#00d4ff"
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "jafeth.smartorch"
+    ]
+  }
+}

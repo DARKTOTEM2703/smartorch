@@ -1,0 +1,87 @@
+version: "3.9"
+
+# SmartOrch — stack completo con un comando:
+#   docker compose up
+#
+# Primera vez descarga ~10 GB de modelos (hermes3:8b, qwen2.5-coder:7b, nomic-embed-text)
+# Las siguientes veces arranca en segundos desde cache.
+
+services:
+
+  # ── Ollama — motor de modelos locales ────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: smartorch-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Descarga de modelos — se ejecuta una vez ──────────────────────────────────
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: smartorch-pull
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Descargando modelos SmartOrch..."
+        ollama pull hermes3:8b
+        ollama pull qwen2.5-coder:7b
+        ollama pull qwen2.5-coder:1.5b
+        ollama pull nomic-embed-text
+        echo "Modelos listos."
+    restart: "no"
+
+  # ── SmartOrch Server ──────────────────────────────────────────────────────────
+  smartorch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: smartorch-server
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - smartorch_db:/app/.smartorch_db
+      # Monta tu workspace para que SmartOrch lo indexe:
+      # - /ruta/a/tu/proyecto:/workspace:ro
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - SMARTORCH_HOST=0.0.0.0
+      - SMARTORCH_PORT=8080
+      - SMARTORCH_API_KEY=smartorch-local-key
+      - MODEL_CHAT=hermes3:8b
+      - MODEL_CODE=qwen2.5-coder:7b
+      - MODEL_AGENT=hermes3:8b
+      - MODEL_SECURITY=hermes3:8b
+      - SMARTORCH_DEBUG=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  ollama_data:
+    driver: local
+  smartorch_db:
+    driver: local

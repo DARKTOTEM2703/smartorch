@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor">
+  <!-- S estilizada como circuito — monocromática para VS Code activity bar -->
+  <!-- Arco superior de la S -->
+  <path d="M 5.5 4.5
+           C 5.5 3.1, 6.5 2.5, 8 2.5
+           C 9.5 2.5, 10.5 3.2, 10.5 4.8
+           C 10.5 6.4, 9.2 7.1, 8 7.5"
+        stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+  <!-- Arco inferior de la S -->
+  <path d="M 8 8.5
+           C 6.8 8.9, 5.5 9.6, 5.5 11.2
+           C 5.5 12.8, 6.5 13.5, 8 13.5
+           C 9.5 13.5, 10.5 12.8, 10.5 11.4"
+        stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+  <!-- Nodo central -->
+  <circle cx="8" cy="8" r="1.2" fill="currentColor"/>
+  <!-- Puntos terminales -->
+  <circle cx="8" cy="2.5" r="0.9" fill="currentColor"/>
+  <circle cx="8" cy="13.5" r="0.9" fill="currentColor"/>
+</svg>

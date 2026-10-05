@@ -1,0 +1,37 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.env
+.env.*
+index.json
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# SmartOrch runtime data
+smartorch_db/
+chroma_data/
+*.chroma/
+*.pkl
+*.index
+
+# Secrets
+secrets.json
+config.local.py
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Extension build
+node_modules/
+*.vsix
+out/

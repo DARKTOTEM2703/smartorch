@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <!-- Fondo circular con gradiente -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F1923"/>
+      <stop offset="100%" stop-color="#0A2540"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="20" y1="20" x2="108" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#00E5FF"/>
+      <stop offset="60%" stop-color="#0080FF"/>
+      <stop offset="100%" stop-color="#7B2FFF"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Base circular -->
+  <circle cx="64" cy="64" r="60" fill="url(#bg)"/>
+  <circle cx="64" cy="64" r="60" fill="none" stroke="url(#accent)" stroke-width="2" opacity="0.6"/>
+
+  <!-- Circuito — nodos de conexión -->
+  <circle cx="30" cy="40" r="3" fill="#00E5FF" opacity="0.5"/>
+  <circle cx="98" cy="88" r="3" fill="#7B2FFF" opacity="0.5"/>
+  <circle cx="30" cy="88" r="2" fill="#0080FF" opacity="0.4"/>
+  <circle cx="98" cy="40" r="2" fill="#00E5FF" opacity="0.4"/>
+
+  <!-- Trazas de circuito -->
+  <polyline points="30,40 30,64 40,64" stroke="#00E5FF" stroke-width="1.5" opacity="0.3" fill="none" stroke-linecap="round"/>
+  <polyline points="98,88 98,64 88,64" stroke="#7B2FFF" stroke-width="1.5" opacity="0.3" fill="none" stroke-linecap="round"/>
+
+  <!-- Letra S estilizada como circuito -->
+  <!-- Arco superior -->
+  <path d="M 48 45
+           C 48 38, 56 34, 64 34
+           C 72 34, 80 38, 80 46
+           C 80 54, 72 58, 64 60"
+        stroke="url(#accent)" stroke-width="7" stroke-linecap="round" fill="none" filter="url(#glow)"/>
+
+  <!-- Arco inferior -->
+  <path d="M 64 68
+           C 56 70, 48 74, 48 82
+           C 48 90, 56 94, 64 94
+           C 72 94, 80 90, 80 83"
+        stroke="url(#accent)" stroke-width="7" stroke-linecap="round" fill="none" filter="url(#glow)"/>
+
+  <!-- Punto de conexión central — nodo -->
+  <circle cx="64" cy="64" r="5" fill="#00E5FF" filter="url(#glow)"/>
+  <circle cx="64" cy="64" r="3" fill="#FFFFFF"/>
+
+  <!-- Puntos de los extremos de la S -->
+  <circle cx="64" cy="34" r="3.5" fill="#00E5FF" opacity="0.9"/>
+  <circle cx="64" cy="94" r="3.5" fill="#7B2FFF" opacity="0.9"/>
+</svg>

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartorch"
+version = "0.1.0"
+description = "SmartOrch — AI local con Ollama: SOLID/DRY, YARA/Sigma, anti-alucinaciones"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jafeth.gamboa@techmaleon.mx" }]
+
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "chromadb>=0.5",
+    "scikit-learn>=1.5",
+    "numpy>=1.26",
+]
+
+[project.scripts]
+smartorch = "smartorch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["smartorch*"]
+
+[tool.setuptools.package-data]
+smartorch = ["py.typed"]
