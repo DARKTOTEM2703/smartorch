@@ -8,11 +8,13 @@ import json
 import os
 import threading
 import time
+from contextvars import ContextVar
 from pathlib import Path
 
 from smartorch.core import datadir
 
 _lock = threading.Lock()
+_request_root: ContextVar[str | None] = ContextVar("smartorch_request_root", default=None)
 
 
 def _file() -> str:
@@ -56,3 +58,22 @@ def active_roots(limit: int = 5) -> list[str]:
     items = [v for v in data.values() if os.path.isdir(v.get("root", ""))]
     items.sort(key=lambda v: v.get("last_used", 0), reverse=True)
     return [v["root"] for v in items[:limit]]
+
+
+def is_registered(root: str) -> bool:
+    with _lock:
+        return normalize(root) in _load()
+
+
+def use_root(root: str | None) -> None:
+    """Fija el workspace de la peticion en curso (valido para el hilo/tarea actual)."""
+    _request_root.set(canonical(root) if root and os.path.isdir(os.path.expanduser(root)) else None)
+
+
+def current_root() -> str | None:
+    """Workspace de la peticion; si no hay, el ultimo usado."""
+    root = _request_root.get()
+    if root and os.path.isdir(root):
+        return root
+    roots = active_roots(1)
+    return roots[0] if roots else None

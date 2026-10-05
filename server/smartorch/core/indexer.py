@@ -14,7 +14,7 @@ from smartorch.core.datadir import INDEX_FILE, migrate_legacy
 
 migrate_legacy()
 
-from smartorch.rag.chunker import SKIP_DIRS as _CHUNKER_SKIP_DIRS, is_indexable
+from smartorch.rag.chunker import SKIP_DIRS as _CHUNKER_SKIP_DIRS, IgnoreRules, is_indexable, skip_dir
 
 # Mismas reglas que el RAG semantico: una sola fuente de verdad sobre que se indexa
 SKIP_DIRS = _CHUNKER_SKIP_DIRS | {'.build', '.dist', 'compilados', 'onefile-build'}
@@ -61,14 +61,18 @@ class CodeIndex:
         root = os.path.abspath(root)
         new_chunks = []
 
+        rules = IgnoreRules(root)
         for dirpath, dirnames, filenames in os.walk(root):
             # Filtrar directorios ignorados
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not skip_dir(d)
+                           and not rules.ignored(os.path.join(dirpath, d), True)]
 
             for fname in filenames:
                 if not is_indexable(Path(fname)):
                     continue
                 fpath = os.path.join(dirpath, fname)
+                if rules.ignored(fpath):
+                    continue
                 rel   = os.path.relpath(fpath, root)
                 try:
                     with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:

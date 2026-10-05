@@ -25,7 +25,7 @@ import asyncio
 
 from smartorch.config import HOST, PORT, API_KEY, MODELS, AGENT_WORK_DIR, model_context_window
 from smartorch.core import ollama_client as ollama, indexer
-from smartorch.core import orchestrator, history, gating
+from smartorch.core import analysis, context, gating, history, orchestrator, workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +306,8 @@ async def chat(req: ChatRequest, x_smartorch_source: Optional[str] = Header(None
     if not msgs:
         raise HTTPException(status_code=400, detail="messages requeridos")
     _derive_conversation(req, msgs, x_smartorch_source)
+    _ensure_indexed(req.workspace)
+    workspaces.use_root(req.workspace)
 
     t0 = time.time()
 
@@ -493,6 +495,32 @@ async def data_dir_info():
     return await asyncio.to_thread(datadir.info)
 
 
+def _analysis_root(root: Optional[str]) -> str:
+    """Solo se analizan workspaces ya registrados (los que SmartOrch indexa), no cualquier carpeta del disco."""
+    import os
+    target = root or workspaces.current_root()
+    if not target or not os.path.isdir(target):
+        raise HTTPException(status_code=400, detail="No hay workspace; indexa uno con /smartorch/index")
+    if not workspaces.is_registered(target):
+        raise HTTPException(status_code=403, detail="Ese workspace no está registrado; indexalo primero")
+    return target
+
+
+@app.get("/smartorch/analysis", dependencies=[Depends(verify_key)])
+async def project_analysis(root: Optional[str] = None, refresh: bool = False):
+    target = _analysis_root(root)
+    profile = await asyncio.to_thread(analysis.get_profile, target, refresh)
+    return {k: v for k, v in profile.items() if not k.startswith("_")}
+
+
+@app.get("/smartorch/analysis/report", dependencies=[Depends(verify_key)])
+async def project_analysis_report(root: Optional[str] = None, refresh: bool = False):
+    from fastapi.responses import PlainTextResponse
+    target = _analysis_root(root)
+    profile = await asyncio.to_thread(analysis.get_profile, target, refresh)
+    return PlainTextResponse(analysis.report_markdown(profile), media_type="text/markdown; charset=utf-8")
+
+
 # ── Historial compartido (web · CLI · editor) ────────────────────────────────
 class ConversationCreate(BaseModel):
     title:     Optional[str] = ""
@@ -578,18 +606,38 @@ def _current_rag_mode() -> str:
     return "semantic" if _rag_chunk_count() > 0 else "tfidf"
 
 def _get_rag_context(msgs: list[dict]) -> str:
-    """Intenta RAG semántico; fallback a TF-IDF."""
+    """Estructura analizada del proyecto + fragmentos relevantes (RAG semantico, o TF-IDF de respaldo)."""
     user_text = next((m["content"] for m in reversed(msgs) if m.get("role") == "user"), "")
-    if not gating.wants_project_context(user_text):
-        return ""
-    try:
-        from smartorch.rag.retriever import search_formatted
-        return search_formatted(user_text)
-    except ImportError:
-        idx = indexer.get_index()
-        if idx.size == 0:
-            return ""
-        return idx.search_formatted(user_text, top_k=4, max_chars=2500)
+    return context.build(
+        user_text,
+        fallback=lambda q: indexer.get_index().search_formatted(q, top_k=4, max_chars=2500) if indexer.get_index().size else "",
+    )
+
+
+_indexing: set[str] = set()
+
+
+def _ensure_indexed(workspace: Optional[str]) -> None:
+    """La primera vez que se chatea con un workspace nuevo, se registra e indexa en segundo plano."""
+    import os
+    import threading
+    if not workspace or not os.path.isdir(workspace):
+        return
+    key = workspaces.canonical(workspace)
+    if workspaces.is_registered(workspace) or key in _indexing:
+        return
+    _indexing.add(key)
+
+    def job():
+        try:
+            logger.info(f"[AUTO-INDEX] workspace nuevo: {workspace}")
+            _build_rag_index(workspace)
+        except Exception as e:
+            logger.warning(f"[AUTO-INDEX] fallo: {e}")
+        finally:
+            _indexing.discard(key)
+
+    threading.Thread(target=job, daemon=True).start()
 
 def _build_rag_index(root: str) -> int:
     from smartorch.core import workspaces

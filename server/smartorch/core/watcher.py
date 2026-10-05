@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL = 8   # segundos entre polls
 DEBOUNCE      = 3   # esperar N segundos sin cambios antes de reindexar
 
-from smartorch.rag.chunker import SKIP_DIRS, is_indexable
+from smartorch.rag.chunker import IgnoreRules, is_indexable, skip_dir
 
 
 class WorkspaceWatcher:
@@ -31,11 +31,14 @@ class WorkspaceWatcher:
         """Toma snapshot de mtimes de todos los archivos relevantes."""
         snapshot = {}
         own_index = os.path.abspath(INDEX_FILE)
+        rules = IgnoreRules(self.root)
         for dirpath, dirnames, filenames in os.walk(self.root):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
+            dirnames[:] = [d for d in dirnames if not skip_dir(d) and not rules.ignored(os.path.join(dirpath, d), True)]
             for fname in filenames:
                 if is_indexable(Path(fname)):
                     fpath = os.path.join(dirpath, fname)
+                    if rules.ignored(fpath):
+                        continue
                     if os.path.abspath(fpath) == own_index:
                         continue  # el indice propio no debe disparar reindexados
                     try:

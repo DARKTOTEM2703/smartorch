@@ -9,6 +9,7 @@ from smartorch.core import workspaces
 from smartorch.core.gating import MIN_RAG_SCORE
 
 PATH_BOOST = 0.15
+SYMBOL_BOOST = 0.2
 _STOPWORDS = {
     "donde", "esta", "este", "esta", "como", "para", "pero", "cual", "cuales", "sobre", "hace", "hacer",
     "archivo", "archivos", "codigo", "proyecto", "workspace", "funcion", "clase", "metodo", "that", "this",
@@ -22,7 +23,8 @@ def search(query: str, top_k: int = 5, roots: list[str] | None = None) -> list[d
     Sin `roots` usa los workspaces registrados (workspaces.active_roots).
     """
     if roots is None:
-        roots = workspaces.active_roots()
+        current = workspaces.current_root()
+        roots = [current] if current else workspaces.active_roots()
     # Se pide de mas y se reordena: una palabra de la pregunta en el nombre del archivo
     # ("watcher" -> watcher.py) es una senal fuerte que los embeddings suelen perder.
     pool = semantic_search(query, n_results=max(top_k * 3, top_k), roots=roots)
@@ -31,8 +33,24 @@ def search(query: str, top_k: int = 5, roots: list[str] | None = None) -> list[d
         path = r["file"].lower()
         if any(t in path for t in terms):
             r["score"] = round(min(1.0, r["score"] + PATH_BOOST), 3)
+    # Un simbolo (clase/funcion) nombrado en la pregunta lleva al archivo que lo define
+    defining = _defining_files(query, roots)
+    for r in pool:
+        if r["file"] in defining:
+            r["score"] = round(min(1.0, r["score"] + SYMBOL_BOOST), 3)
     pool.sort(key=lambda r: r["score"], reverse=True)
     return pool[:top_k]
+
+
+def _defining_files(query: str, roots: list[str]) -> set[str]:
+    try:
+        from smartorch.core import analysis
+        files: set[str] = set()
+        for root in roots[:2]:
+            files.update(analysis.symbol_files(analysis.get_profile(root), query))
+        return files
+    except Exception:
+        return set()
 
 
 def search_formatted(query: str, top_k: int = 5, max_chars: int = 3000, roots: list[str] | None = None) -> str:

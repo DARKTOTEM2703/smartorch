@@ -12,7 +12,7 @@ Pipeline:
 import re
 import logging
 import concurrent.futures
-from smartorch.core import router, chain, compressor, gating, ollama_client as ollama, indexer, cache as resp_cache
+from smartorch.core import router, chain, compressor, context, gating, ollama_client as ollama, indexer, cache as resp_cache
 from smartorch.config import MAX_TOKENS_OUT, MODEL_CONTEXT_CHARS, MODELS, SPECULATIVE_ENABLED, SPECULATIVE_MIN_TOKENS
 
 logger = logging.getLogger(__name__)
@@ -37,29 +37,10 @@ def _get_rag_context(messages: list[dict]) -> str:
             user_text = content.strip()
             break
 
-    if not gating.wants_project_context(user_text):
-        return ""
-
-    # Intentar RAG semántico primero
-    try:
-        from smartorch.rag.retriever import search_formatted, search
-        from smartorch.rag.store import collection_ready
-        if collection_ready():
-            ctx = search_formatted(user_text, top_k=5, max_chars=3000)
-            if ctx:
-                logger.debug(f"[RAG] Semántico: {len(ctx)} chars")
-                return ctx
-    except ImportError:
-        pass
-
-    # Fallback: TF-IDF
-    if _idx.size > 0:
-        ctx = _idx.search_formatted(user_text, top_k=4, max_chars=2500)
-        if ctx:
-            logger.debug(f"[RAG] TF-IDF: {len(ctx)} chars")
-            return ctx
-
-    return ""
+    return context.build(
+        user_text,
+        fallback=lambda q: _idx.search_formatted(q, top_k=4, max_chars=2500) if _idx.size > 0 else "",
+    )
 
 
 def _inject_rag(messages: list[dict], rag_ctx: str) -> list[dict]:

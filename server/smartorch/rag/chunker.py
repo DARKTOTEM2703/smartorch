@@ -2,6 +2,7 @@
 Chunker inteligente de código.
 Divide archivos en segmentos solapados, preservando contexto de archivo y línea.
 """
+import fnmatch
 import os
 import hashlib
 from pathlib import Path
@@ -37,6 +38,66 @@ SKIP_FILES = {
     "composer.lock", "cargo.lock", "gemfile.lock", "go.sum",
 }
 SKIP_SUFFIXES = (".min.js", ".min.css", ".map", ".lock", ".bundle.js")
+
+
+def skip_dir(name: str) -> bool:
+    """Carpetas que nunca se recorren: dependencias, builds, ocultas y artefactos de empaquetado."""
+    return name in SKIP_DIRS or name.startswith(".") or name.endswith((".egg-info", ".dist-info"))
+
+
+class IgnoreRules:
+    """
+    Respeta los .gitignore del workspace, incluidos los de subcarpetas (patrones simples),
+    y un .smartorchignore opcional en la raiz.
+    """
+
+    def __init__(self, root):
+        self.root = Path(root).resolve()
+        self._cache: dict[Path, list[str]] = {}
+
+    def _patterns(self, directory: Path) -> list[str]:
+        if directory in self._cache:
+            return self._cache[directory]
+        patterns: list[str] = []
+        names = (".gitignore", ".smartorchignore") if directory == self.root else (".gitignore",)
+        for name in names:
+            try:
+                for line in (directory / name).read_text(encoding="utf-8", errors="ignore").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith(("#", "!")):
+                        patterns.append(line)
+            except OSError:
+                continue
+        self._cache[directory] = patterns
+        return patterns
+
+    @staticmethod
+    def _match(patterns: list[str], rel: str, is_dir: bool) -> bool:
+        name = rel.split("/")[-1]
+        for pat in patterns:
+            dir_only = pat.endswith("/")
+            core = pat.strip("/")
+            if not core or (dir_only and not is_dir):
+                continue
+            if "/" in core:  # anclado a la carpeta del .gitignore o con subcarpeta
+                if fnmatch.fnmatch(rel, core.lstrip("/")) or fnmatch.fnmatch(rel, "*/" + core.lstrip("/")):
+                    return True
+            elif fnmatch.fnmatch(name, core):
+                return True
+        return False
+
+    def ignored(self, path, is_dir: bool = False) -> bool:
+        try:
+            full = Path(path).resolve()
+            parts = full.relative_to(self.root).parts
+        except ValueError:
+            return False
+        ancestors = [self.root] + [self.root.joinpath(*parts[:i]) for i in range(1, len(parts))]
+        for ancestor in ancestors:
+            patterns = self._patterns(ancestor)
+            if patterns and self._match(patterns, full.relative_to(ancestor).as_posix(), is_dir):
+                return True
+        return False
 
 
 def is_indexable(path: Path) -> bool:
@@ -100,13 +161,14 @@ def index_directory(root: str) -> list[dict]:
     all_chunks = []
     root_path  = Path(root).resolve()
 
+    rules = IgnoreRules(root_path)
     for dirpath, dirnames, filenames in os.walk(root_path):
         # Excluir directorios que no aportan
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+        dirnames[:] = [d for d in dirnames if not skip_dir(d) and not rules.ignored(Path(dirpath) / d, True)]
 
         for fname in filenames:
             fpath = Path(dirpath) / fname
-            if not is_indexable(fpath):
+            if not is_indexable(fpath) or rules.ignored(fpath):
                 continue
             try:
                 if fpath.stat().st_size > MAX_FILE_SIZE:
