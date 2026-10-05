@@ -11,3 +11,6 @@ chroma_db/
 .smartorch/
 .git_old/
 .smartorch_db/
+
+# resultados locales del banco de pruebas
+server/evals/results/

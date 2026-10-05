@@ -19,6 +19,7 @@ Uso:
   smartorch doc archivo.py          # Generar documentación
   smartorch status                  # Estado del servidor + métricas
   smartorch serve                   # Iniciar el servidor SmartOrch
+  smartorch agent "tarea"           # Agente con herramientas (--plan, --effort, --web, -y)
   smartorch data [carpeta]          # Ver o cambiar dónde se guardan historial, índice y RAG
   smartorch history                 # Conversaciones guardadas (web · CLI · editor)
   smartorch resume [id]             # Retomar una conversación (la última por defecto)
@@ -46,6 +47,9 @@ HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".smartorch_history")
 
 # Conversacion activa en el historial compartido (web · CLI · editor)
 _conv_id: str | None = None
+
+# Nivel de esfuerzo de la sesion (rapido | normal | maximo)
+_effort: list[str] = ["normal"]
 
 
 def _new_conversation() -> str:
@@ -260,6 +264,7 @@ def _send_chat(
         "messages":  messages,
         "stream":    stream,
         "max_tokens": 2048,
+        "effort":    _effort[0],
     }
     if _conv_id:
         body.update({"conversation_id": _conv_id, "source": "cli", "workspace": os.getcwd()})
@@ -536,6 +541,23 @@ def _repl(resume_id: str | None = None):
                 print(f"  [{i}] {role}: {m['content'][:80]}...")
             continue
 
+        if raw.startswith(("/agent ", "/plan ")):
+            from smartorch.cli_agent import agent_command
+            task = raw.split(" ", 1)[1].strip()
+            if task:
+                agent_command(task, plan=raw.startswith("/plan "), effort=_effort[0], approval="ask",
+                              web=False, workspace=None)
+            continue
+
+        if raw.startswith("/effort"):
+            level = raw.partition(" ")[2].strip().lower()
+            if level in ("rapido", "normal", "maximo"):
+                _effort[0] = level
+                print(_c(C.GRAY, f"  Esfuerzo: {level}"))
+            else:
+                print(_c(C.YELLOW, f"  Uso: /effort rapido|normal|maximo   (actual: {_effort[0]})"))
+            continue
+
         # Slash commands que reciben input del REPL
         if raw.startswith("/") and " " in raw:
             parts = raw.split(" ", 1)
@@ -598,6 +620,9 @@ def _print_help():
         ("/list",        "Conversaciones guardadas (web · CLI · editor)"),
         ("/resume [id]", "Retomar una conversación (la última si no hay id)"),
         ("/open",        "Abrir esta conversación en la web"),
+        ("/agent <t>",   "Agente con herramientas (pide aprobación para editar)"),
+        ("/plan <t>",    "Investigar y proponer un plan, sin modificar nada"),
+        ("/effort <n>",  "Esfuerzo: rapido, normal o maximo"),
         ("/status",      "Estado del servidor y métricas"),
         ("/help",        "Este mensaje"),
         ("/exit",        "Salir"),
@@ -769,6 +794,12 @@ def main():
     )
     parser.add_argument("--no-move", action="store_true", help="smartorch data: no copiar los datos existentes")
     parser.add_argument("--reset", action="store_true", help="smartorch data: volver a la carpeta por defecto")
+    parser.add_argument("--plan", action="store_true", help="smartorch agent: investigar y proponer un plan, sin modificar nada")
+    parser.add_argument("--effort", choices=("rapido", "normal", "maximo"), default="normal", help="esfuerzo: rapido, normal o maximo")
+    parser.add_argument("--approval", choices=("ask", "auto_edits", "readonly"), default="ask", help="smartorch agent: permisos")
+    parser.add_argument("--web", action="store_true", help="smartorch agent: permitir buscar en internet (cada consulta se aprueba)")
+    parser.add_argument("--cwd", default=None, help="smartorch agent: carpeta del proyecto (por defecto la actual)")
+    parser.add_argument("--yes", "-y", action="store_true", help="smartorch agent: aplicar ediciones de archivos sin preguntar")
     parser.add_argument(
         "--url",
         default=None,
@@ -811,6 +842,17 @@ def main():
 
     if args.command == "resume":
         _repl(resume_id=args.input or "latest")
+        return
+
+    if args.command == "agent":
+        from smartorch.cli_agent import agent_command
+        task = args.input or (sys.stdin.read().strip() if not sys.stdin.isatty() else "")
+        if not task:
+            print(_c(C.YELLOW, '  Uso: smartorch agent "tarea" [--plan] [--effort rapido|normal|maximo] [--web] [-y]'))
+            sys.exit(1)
+        _new_conversation()
+        agent_command(task, plan=args.plan, effort=args.effort, approval=args.approval, web=args.web,
+                      workspace=args.cwd, yes=args.yes)
         return
 
     _new_conversation()  # cada llamada suelta queda guardada en el historial compartido

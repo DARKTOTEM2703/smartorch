@@ -92,14 +92,92 @@ class SandboxTests(unittest.TestCase):
         Path(self.root, "calc.py").write_text("def divide(a, b):\n    return a * b\n", encoding="utf-8")
         with self.assertRaises(SandboxError) as ctx:
             tools.edit_file(self.sb, "calc.py", "return a * c", "x")
-        self.assertIn("Texto parecido", str(ctx.exception))
+        self.assertIn("Contenido actual", str(ctx.exception))  # archivo chico: se muestra completo
         self.assertIn("2:     return a * b", str(ctx.exception))
+
+    def test_failed_edit_on_a_big_file_shows_only_similar_lines(self):
+        Path = __import__("pathlib").Path
+        body = "".join("def f%d(x):\n    return x + %d\n\n" % (i, i) for i in range(300))
+        Path(self.root, "big.py").write_text(body, encoding="utf-8")
+        with self.assertRaises(SandboxError) as ctx:
+            tools.edit_file(self.sb, "big.py", "return x + 1500", "x")
+        self.assertIn("Texto parecido", str(ctx.exception))
+        self.assertNotIn("f299", str(ctx.exception))
 
     def test_fuzzy_edit_still_refuses_ambiguous_blocks(self):
         Path = __import__("pathlib").Path
         Path(self.root, "dup2.py").write_text("    x = 1\n    y = 2\n    x = 1\n    y = 2\n", encoding="utf-8")
         with self.assertRaises(SandboxError):
             tools.edit_file(self.sb, "dup2.py", "x = 1\ny = 2", "z")
+
+    def test_glob_ignores_quotes_the_model_adds_and_helps_when_empty(self):
+        self.assertIn("app.py", tools.glob_files(self.sb, "'*.py'").output)
+        self.assertIn("app.py", tools.glob_files(self.sb, '"app.py"').output)
+        empty = tools.glob_files(self.sb, "*.rs")
+        self.assertTrue(empty.ok)
+        self.assertIn("sin coincidencias", empty.output)
+        self.assertIn("app.py", empty.output)  # muestra archivos reales para reorientar al modelo
+
+    def test_search_without_hits_suggests_english_terms(self):
+        out = tools.search_text(self.sb, "descuento")
+        self.assertIn("inglés", out.output)
+
+    def _shop(self):
+        Path = __import__("pathlib").Path
+        Path(self.root, "pricing.py").write_text("def calc_total(items):\n    return sum(items)\n\ncalc_total_extra = 1\n", encoding="utf-8")
+        Path(self.root, "cart.py").write_text("from pricing import calc_total\n\nx = calc_total([1, 2])\n", encoding="utf-8")
+        Path(self.root, "notes.md").write_text("usa calc_total para sumar\n", encoding="utf-8")
+        return Path
+
+    def test_replace_in_files_renames_across_the_project_by_whole_word(self):
+        Path = self._shop()
+        out = tools.replace_in_files(self.sb, "calc_total", "compute_total")
+        self.assertTrue(out.ok, out.output)
+        self.assertIn("pricing.py", out.output)
+        self.assertIn("Sintaxis válida", out.output)
+        self.assertEqual(Path(self.root, "cart.py").read_text(encoding="utf-8"), "from pricing import compute_total\n\nx = compute_total([1, 2])\n")
+        pricing = Path(self.root, "pricing.py").read_text(encoding="utf-8")
+        self.assertIn("def compute_total", pricing)
+        self.assertIn("calc_total_extra", pricing)  # palabra completa: no toca nombres que solo la contienen
+
+    def test_replace_in_files_preview_lists_files_and_diff_without_writing(self):
+        Path = self._shop()
+        preview = tools.preview(self.sb, "replace_in_files", {"old": "calc_total", "new": "compute_total"})
+        self.assertIn("4 ocurrencias en 3 archivos", preview)
+        self.assertIn("-def calc_total(items):", preview)
+        self.assertIn("calc_total", Path(self.root, "cart.py").read_text(encoding="utf-8"))  # nada cambio todavia
+
+    def test_replace_in_files_skips_secrets_and_reports_no_match(self):
+        Path = self._shop()
+        Path(self.root, ".env").write_text("calc_total=1\n", encoding="utf-8")
+        tools.replace_in_files(self.sb, "calc_total", "compute_total")
+        self.assertEqual(Path(self.root, ".env").read_text(encoding="utf-8"), "calc_total=1\n")
+        missing = tools.replace_in_files(self.sb, "no_existe_nunca", "x")
+        self.assertFalse(missing.ok)
+        self.assertIn("search_text", missing.output)
+
+    def test_replace_in_files_warns_when_the_result_does_not_compile(self):
+        Path = self._shop()
+        out = tools.replace_in_files(self.sb, "calc_total", "(((")
+        self.assertIn("Error de sintaxis", out.output)
+
+    def test_replace_in_files_is_mutating_and_confined_to_the_workspace(self):
+        self.assertTrue(tools.is_mutating("replace_in_files"))
+        with self.assertRaises(SandboxError):
+            tools.replace_in_files(self.sb, "a", "b", path="../fuera")
+
+    def test_edit_file_on_a_directory_explains_what_to_use_instead(self):
+        with self.assertRaises(SandboxError) as ctx:
+            tools.edit_file(self.sb, ".", "a", "b")
+        self.assertIn("carpeta", str(ctx.exception))
+        self.assertIn("replace_in_files", str(ctx.exception))
+
+    def test_search_hits_only_in_docs_warn_that_code_may_be_in_english(self):
+        Path = self._shop()
+        Path(self.root, "notes.md").write_text("el descuento se aplica al final\n", encoding="utf-8")
+        out = tools.search_text(self.sb, "descuento").output
+        self.assertIn("Solo hay coincidencias en documentación", out)
+        self.assertIn("discount", out)
 
     def test_write_creates_and_previews_diff(self):
         prev_new = tools.preview(self.sb, "write_file", {"path": "sub/nuevo.txt", "content": "uno\ndos\n"})

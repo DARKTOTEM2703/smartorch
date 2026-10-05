@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import iterate_in_threadpool
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
@@ -26,7 +27,7 @@ import asyncio
 from smartorch.config import HOST, PORT, API_KEY, MODELS, AGENT_WORK_DIR, model_context_window
 from smartorch.core import ollama_client as ollama, indexer
 from smartorch.agent import loop as agent_loop
-from smartorch.core import analysis, context, gating, history, orchestrator, workspaces
+from smartorch.core import analysis, context, effort as effort_mod, gating, history, orchestrator, workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,7 @@ class ChatRequest(BaseModel):
     source:          Optional[str] = "api"
     workspace:       Optional[str] = None
     title:           Optional[str] = None   # titulo sugerido para una conversacion nueva
+    effort:          Optional[str] = "normal"   # rapido | normal | maximo
 
 
 def _last_user_text(msgs: list[dict]) -> str:
@@ -310,19 +312,21 @@ async def chat(req: ChatRequest, x_smartorch_source: Optional[str] = Header(None
     _derive_conversation(req, msgs, x_smartorch_source)
     _ensure_indexed(req.workspace)
     workspaces.use_root(req.workspace)
+    eff = effort_mod.use(req.effort)
+    max_tokens = (req.max_tokens or 2048) if eff.name == "normal" else eff.chat.max_tokens
 
     t0 = time.time()
 
     if req.stream:
         return StreamingResponse(
-            _stream_chat(msgs, req.max_tokens or 2048, req.temperature or 0.3, req),
+            _stream_chat(msgs, max_tokens, req.temperature or 0.3, req),
             media_type="text/event-stream",
         )
 
     result = await asyncio.to_thread(
         orchestrator.run, msgs,
         temperature=req.temperature or 0.3,
-        max_tokens=req.max_tokens or 2048,
+        max_tokens=max_tokens,
     )
     _persist_turn(req, msgs, result["content"])
 
@@ -370,13 +374,14 @@ async def _stream_chat(msgs, max_tokens, temperature, req: Optional["ChatRequest
     try:
         from smartorch.core import router, chain, compressor
 
+        # Los pasos bloqueantes corren en hilos: el servidor sigue atendiendo salud, aprobaciones, etc.
         # Step 1: Router
-        task_type, model = router.route(msgs)
+        task_type, model = await asyncio.to_thread(router.route, msgs)
         yield f"data: {json.dumps({'type':'status','step':'router','task_type':task_type,'model':model})}\n\n"
         await asyncio.sleep(0)
 
         # Step 2: RAG
-        rag_ctx   = _get_rag_context(msgs)
+        rag_ctx   = await asyncio.to_thread(_get_rag_context, msgs)
         rag_count = len(rag_ctx.split('\n')) if rag_ctx else 0
         enriched  = list(msgs)
         if rag_ctx:
@@ -393,9 +398,10 @@ async def _stream_chat(msgs, max_tokens, temperature, req: Optional["ChatRequest
         yield f"data: {json.dumps({'type':'status','step':'cot'})}\n\n"
         await asyncio.sleep(0)
 
-        # Step 3.5: Thinking mode check
-        from smartorch.core.chain import should_think
-        if should_think(msgs, task_type):
+        # Step 3.5: razonar en dos pasos (lo decide el nivel de esfuerzo)
+        user_query = _last_user_text(msgs)
+        think = orchestrator.decide_thinking(msgs, task_type, user_query, effort_mod.current().chat)
+        if think:
             yield f"data: {json.dumps({'type':'status','step':'thinking','model':model})}\n\n"
             await asyncio.sleep(0)
 
@@ -407,7 +413,16 @@ async def _stream_chat(msgs, max_tokens, temperature, req: Optional["ChatRequest
         stream_compl_tokens  = 0
         stream_tok_per_sec   = 0.0
 
-        for chunk in ollama.chat_stream(model=model, messages=fitted, temperature=temperature, max_tokens=max_tokens):
+        async def _thought_chunks():
+            """Respuesta tras razonar en dos pasos (no admite streaming real): se entrega por trozos."""
+            _, answer = await asyncio.to_thread(orchestrator._thinking_generate, fitted, model, max_tokens, temperature)
+            for i in range(0, len(answer), 90):
+                yield answer[i:i + 90]
+                await asyncio.sleep(0)
+
+        source = _thought_chunks() if think else iterate_in_threadpool(ollama.chat_stream(
+            model=model, messages=fitted, temperature=temperature, max_tokens=max_tokens))
+        async for chunk in source:
             if isinstance(chunk, dict) and chunk.get("type") == "token_stats":
                 # Último evento del stream: estadísticas de tokens reales
                 stream_prompt_tokens = chunk.get("prompt_tokens", 0)
@@ -501,7 +516,10 @@ class AgentRequest(BaseModel):
     messages: list[Message]
     workspace: Optional[str] = None
     model: Optional[str] = None
-    mode: Optional[str] = "ask"            # ask | auto_edits | readonly
+    mode: Optional[str] = "agent"            # agent | plan  (compat: ask/auto_edits/readonly = permisos)
+    approval: Optional[str] = None           # ask | auto_edits | readonly
+    effort: Optional[str] = "normal"         # rapido | normal | maximo
+    web: Optional[bool] = False              # busqueda web (cada consulta se aprueba)
     conversation_id: Optional[str] = None
     source: Optional[str] = "api"
     title: Optional[str] = None
@@ -512,9 +530,14 @@ class AgentDecision(BaseModel):
     approve: bool
 
 
+class AgentAnswer(BaseModel):
+    call_id: str
+    answer: str
+
+
 @app.post("/smartorch/agent/run", dependencies=[Depends(verify_key)])
 async def agent_run(req: AgentRequest):
-    """El agente trabaja sobre un workspace con herramientas; lo que modifica espera aprobacion."""
+    """El agente trabaja sobre un workspace con herramientas; lo que modifica o sale a internet espera aprobacion."""
     import json as _json
     msgs = [{"role": m.role, "content": m.content} for m in req.messages]
     if not msgs:
@@ -523,21 +546,29 @@ async def agent_run(req: AgentRequest):
     _ensure_indexed(workspace)
     workspaces.use_root(workspace)
 
+    mode, approval = req.mode or "agent", req.approval
+    if mode in ("ask", "auto_edits", "readonly"):   # clientes anteriores mandaban los permisos en `mode`
+        approval, mode = approval or mode, "agent"
+    plan = mode == "plan"
+    effort_mod.use(req.effort)
+
     def stream():
         final, log = "", []
         try:
-            for ev in agent_loop.run(msgs, workspace or "", req.model, req.mode or "ask"):
-                if ev["type"] == "final":
+            for ev in agent_loop.run(msgs, workspace or "", req.model, approval or "ask",
+                                     req.effort or "normal", plan, bool(req.web)):
+                if ev["type"] == "final" and "agent" not in ev:
                     final = ev["content"]
                 elif ev["type"] == "done":
                     log = ev.get("tool_log", [])
                 yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
         finally:
             if req.conversation_id and (final or log):
+                head = "_Plan propuesto:_\n\n" if plan and final else ""
                 actions = ("\n\n---\n_Acciones del agente:_\n" + "\n".join(f"- {l}" for l in log)) if log else ""
                 try:
                     history.save_turn(req.conversation_id, req.source or "api", _last_user_text(msgs),
-                                      final + actions, workspace, req.title)
+                                      head + final + actions, workspace, req.title)
                 except Exception as e:
                     logger.warning(f"[HISTORY] no se pudo guardar el turno del agente: {e}")
         yield "data: [DONE]\n\n"
@@ -550,6 +581,33 @@ async def agent_approve(body: AgentDecision):
     if not agent_loop.registry.decide(body.call_id, body.approve):
         raise HTTPException(status_code=404, detail="No hay una acción pendiente con ese id")
     return {"status": "ok"}
+
+
+@app.post("/smartorch/agent/answer", dependencies=[Depends(verify_key)])
+async def agent_answer(body: AgentAnswer):
+    if not agent_loop.registry.decide(body.call_id, body.answer):
+        raise HTTPException(status_code=404, detail="No hay una pregunta pendiente con ese id")
+    return {"status": "ok"}
+
+
+@app.get("/smartorch/capabilities", dependencies=[Depends(verify_key)])
+async def capabilities():
+    """Lo que la interfaz ofrece: modos, esfuerzos y si la busqueda web esta disponible."""
+    from smartorch.agent import web as web_mod
+    return {
+        "modes": [
+            {"id": "ask", "label": "Preguntar", "description": "Chat con el contexto del proyecto. No usa herramientas."},
+            {"id": "plan", "label": "Plan", "description": "Investiga y entrega un plan sin modificar nada."},
+            {"id": "agent", "label": "Agente", "description": "Lee, edita y ejecuta con tu aprobación."},
+        ],
+        "efforts": effort_mod.catalog(),
+        "approvals": [
+            {"id": "ask", "label": "Preguntar siempre"},
+            {"id": "auto_edits", "label": "Editar archivos solo"},
+            {"id": "readonly", "label": "Solo lectura"},
+        ],
+        "web": web_mod.enabled(),
+    }
 
 
 def _analysis_root(root: Optional[str]) -> str:

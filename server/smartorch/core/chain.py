@@ -11,7 +11,7 @@ Técnicas implementadas:
 """
 import re
 
-from smartorch.core import gating
+from smartorch.core import effort as effort_mod, gating
 
 
 def _last_user_text(messages: list[dict]) -> str:
@@ -301,7 +301,9 @@ def inject_cot(messages: list[dict], task_type: str) -> list[dict]:
     if task_type != "security" and _is_security(messages):
         task_type = "security"
 
-    if task_type in ("chat", "general") and gating.is_trivial(_last_user_text(messages)):
+    last = _last_user_text(messages)
+    lean = not effort_mod.current().chat.full_cot and not gating.wants_project_context(last)
+    if task_type in ("chat", "general") and (gating.is_trivial(last) or lean):
         system_prompt = gating.MINIMAL_SYSTEM
     elif task_type == "code":
         stack = detect_stack(messages)
@@ -322,6 +324,9 @@ def inject_cot(messages: list[dict], task_type: str) -> list[dict]:
             "compress": SYSTEM_DEFAULT,
         }
         system_prompt = system_map.get(task_type, SYSTEM_DEFAULT)
+
+    if effort_mod.current().name == "rapido":
+        system_prompt += "\n\nSé muy conciso: responde solo lo esencial, sin introducciones ni explicaciones de más."
 
     few_shot = _get_few_shot(messages)
     if few_shot:

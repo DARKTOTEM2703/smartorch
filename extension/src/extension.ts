@@ -6,8 +6,9 @@ import * as vscode from "vscode";
 
 import { CompletionProvider } from "./completion";
 import { activateSmartOrch } from "./core";
-import { ChatPanel } from "./panel";
+import { ChatPanel, registerProposedProvider } from "./panel";
 import { startSmartOrchServer } from "./runtime";
+import { registerTrees } from "./trees";
 
 // Comandos de editor: clic derecho / paleta / atajos. Cada uno envia el codigo al chat.
 const SLASH: Record<string, string> = {
@@ -40,6 +41,8 @@ function selectionOrFile(): { code: string; language: string; file: string } | u
 
 export function activate(context: vscode.ExtensionContext) {
   const panel = new ChatPanel(context);
+  registerProposedProvider(context);
+  registerTrees(context);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatPanel.viewId, panel, {

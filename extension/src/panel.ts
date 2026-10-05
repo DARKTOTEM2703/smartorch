@@ -160,6 +160,9 @@ class ChatSurface {
       case "openFile":
         await openFile(String(m.path ?? ""));
         break;
+      case "diff":
+        await showDiff(String(m.path ?? ""), String(m.content ?? "").slice(0, MAX_TEXT));
+        break;
     }
   }
 
@@ -293,6 +296,44 @@ async function openFile(rel: string) {
   } catch {
     void vscode.window.showWarningMessage(`SmartOrch: no pude abrir ${rel}`);
   }
+}
+
+// ── Diff nativo de los cambios que propone el agente ───────────────────────
+
+const PROPOSED_SCHEME = "smartorch-proposed";
+const proposedContent = new Map<string, string>();
+const proposedChanged = new vscode.EventEmitter<vscode.Uri>();
+
+export function registerProposedProvider(context: vscode.ExtensionContext) {
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(PROPOSED_SCHEME, {
+      onDidChange: proposedChanged.event,
+      provideTextDocumentContent: (uri) => proposedContent.get(uri.toString()) ?? "",
+    }),
+  );
+}
+
+/** Abre el visor de diferencias de VS Code: archivo real a la izquierda, version propuesta a la derecha. */
+async function showDiff(rel: string, content: string) {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (!folder || !rel) return;
+  const target = vscode.Uri.joinPath(folder.uri, rel);
+  if (!target.fsPath.toLowerCase().startsWith(folder.uri.fsPath.toLowerCase())) return;
+
+  const slug = rel.replace(/\\/g, "/");
+  const proposed = vscode.Uri.from({ scheme: PROPOSED_SCHEME, path: `/${slug}`, query: String(Date.now()) });
+  proposedContent.set(proposed.toString(), content);
+  proposedChanged.fire(proposed);
+
+  let original: vscode.Uri = target;
+  try {
+    await vscode.workspace.fs.stat(target);
+  } catch {
+    // archivo nuevo: se compara contra uno vacio
+    original = vscode.Uri.from({ scheme: PROPOSED_SCHEME, path: `/${slug}`, query: "vacio" });
+    proposedContent.set(original.toString(), "");
+  }
+  await vscode.commands.executeCommand("vscode.diff", original, proposed, `SmartOrch: ${slug} (propuesto)`);
 }
 
 // ── Vista lateral + pestaña ────────────────────────────────────────────────

@@ -8,7 +8,7 @@ mas parecidos a la pregunta.
 import logging
 from typing import Callable, Optional
 
-from smartorch.core import analysis, gating, workspaces
+from smartorch.core import analysis, effort as effort_mod, gating, workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,8 @@ def build(user_text: str, fallback: Optional[Callable[[str], str]] = None) -> st
     fragments = ""
     try:
         from smartorch.rag.retriever import search_formatted
-        fragments = search_formatted(user_text, top_k=5, max_chars=3000)
+        knobs = effort_mod.current().chat
+        fragments = search_formatted(user_text, top_k=knobs.rag_top_k, max_chars=knobs.rag_chars)
     except ImportError:
         fragments = ""
     if not fragments and fallback:

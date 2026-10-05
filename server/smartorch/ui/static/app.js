@@ -4,7 +4,7 @@
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-const state = { key: "", convs: [], current: null, messages: [], streaming: false, abort: null, lastUpdated: 0, agent: false, workspace: "" };
+const state = { key: "", convs: [], current: null, messages: [], streaming: false, abort: null, lastUpdated: 0, mode: "ask", effort: "normal", web: false, caps: null, workspace: "" };
 
 /* ── Modo nativo (webview de VS Code) o embebido (iframe) ───── */
 const params = new URLSearchParams(location.search);
@@ -57,11 +57,18 @@ const SLASH = {
   mobile:   ["Feature mobile", "Implementa el siguiente requerimiento para aplicación móvil (Flutter/React Native) aplicando SOLID y buenas prácticas:"],
 };
 const STARTERS = [
+  ["Analizar mi proyecto", "/analizar", "Estructura, módulos, dependencias y pendientes"],
+  ["Planear un cambio", "/plan ", "Investigo y te propongo un plan, sin tocar nada"],
   ["Explicar código", "/explain ", "Pega código y te lo explico"],
   ["Generar tests", "/test ", "Casos normales, borde y de error"],
-  ["Regla YARA", "/yara ", "Para threat hunting"],
-  ["Mi proyecto", "¿Cómo está organizado este proyecto y por dónde debería empezar a leerlo?", "Usa el RAG del workspace"],
 ];
+const CONTROL_MENU = {
+  plan: ["Modo Plan", ""], agente: ["Modo Agente", ""], preguntar: ["Modo Preguntar", ""],
+  rapido: ["Esfuerzo Rápido", ""], normal: ["Esfuerzo Normal", ""], maximo: ["Esfuerzo Máximo", ""],
+  web: ["Activar o desactivar la búsqueda web", ""], init: ["Crear SMARTORCH.md con las reglas del proyecto", ""],
+  analizar: ["Analizar el proyecto", ""],
+};
+const INIT_PROMPT = "Crea un archivo SMARTORCH.md en la raíz del proyecto con las instrucciones y convenciones para trabajar en él: estructura, cómo correr los tests, estilo de código y cosas a evitar. Primero lee el README y los archivos principales para basarte en lo que realmente hay.";
 
 /* ── Transporte ─────────────────────────────────────────────── */
 function parseSse(onEvent) {
@@ -254,7 +261,8 @@ function setHeader(title, source) {
 
 /* ── Agente: tarjetas de herramientas y aprobaciones ────────── */
 const pendingApprovals = new Set();
-const TOOL_ICONS = { list_files: "📂", read_file: "📖", search_text: "🔎", write_file: "📝", edit_file: "✏️", run_command: "⚙️" };
+const TOOL_ICONS = { list_files: "📂", glob: "📂", read_file: "📖", search_text: "🔎", write_file: "📝", edit_file: "✏️", run_command: "⚙️", run_tests: "🧪", explore: "🧭", web_search: "🌐", web_fetch: "🌐" };
+const HIDDEN_TOOLS = new Set(["todo_write", "ask_user"]); // tienen su propia tarjeta
 
 function renderDiff(text) {
   const pre = el("pre", "diff");
@@ -275,33 +283,83 @@ async function decide(id, ok, card) {
 
 function toolCard(ev) {
   const card = el("div", "tool" + (ev.needs_approval ? " asks" : ""));
-  const arg = ev.args.path || ev.args.pattern || ev.args.command || "";
+  const arg = ev.args.path || ev.args.pattern || ev.args.command || ev.args.query || ev.args.url || ev.args.question || "";
   const head = el("div", "tool-head");
   head.append(el("span", "", TOOL_ICONS[ev.name] || "🔧"), el("b", "", ev.name), el("span", "tool-arg", String(arg)),
               el("span", "tool-state", ev.needs_approval ? "espera tu aprobación" : "ejecutando…"));
   card.append(head);
   if (ev.preview) {
     const body = el("div", "tool-body");
-    body.append(ev.name === "run_command" ? el("pre", "diff", ev.preview) : renderDiff(ev.preview));
+    body.append(["write_file", "edit_file"].includes(ev.name) ? renderDiff(ev.preview) : el("pre", "diff", ev.preview));
     card.append(body);
   }
   if (ev.needs_approval) {
     pendingApprovals.add(ev.id);
     const actions = el("div", "tool-actions");
-    const yes = el("button", "btn primary", ev.name === "run_command" ? "Ejecutar" : "Aprobar");
+    const label = ["run_command", "run_tests"].includes(ev.name) ? "Ejecutar" : ev.network ? "Permitir" : "Aprobar";
+    const yes = el("button", "btn primary", label);
     const no = el("button", "btn", "Rechazar");
     yes.onclick = () => decide(ev.id, true, card);
     no.onclick = () => decide(ev.id, false, card);
     actions.append(yes, no);
+    if (NATIVE && ev.proposed) {
+      const view = el("button", "btn", "Ver diff en VS Code");
+      view.onclick = () => toHost({ type: "diff", path: ev.proposed.path, content: ev.proposed.content });
+      actions.append(view);
+    }
     card.append(actions);
   }
   return card;
 }
 
+function todoCard(todos) {
+  const card = el("div", "todo");
+  card.append(el("div", "todo-title", `🗒️ Tareas (${todos.filter((t) => t.done).length}/${todos.length})`));
+  for (const t of todos) card.append(el("div", "todo-item" + (t.done ? " done" : ""), (t.done ? "☑ " : "☐ ") + t.text));
+  return card;
+}
+
+function askCard(ev) {
+  const card = el("div", "ask");
+  card.append(el("div", "ask-q", "❓ " + ev.question));
+  const opts = el("div", "ask-opts");
+  const free = el("div", "ask-free");
+  const reply = async (answer) => {
+    if (!answer.trim()) return;
+    pendingApprovals.delete(ev.id);
+    opts.remove(); free.remove();
+    card.append(el("div", "ask-a", "Tú: " + answer));
+    try { await api("/smartorch/agent/answer", { method: "POST", body: JSON.stringify({ call_id: ev.id, answer }) }); } catch { /* sin respuesta */ }
+  };
+  for (const o of ev.options || []) { const b = el("button", "btn", o); b.onclick = () => reply(o); opts.append(b); }
+  const input = el("input"); input.placeholder = "Escribe tu respuesta…";
+  const go = el("button", "btn primary", "Responder");
+  input.onkeydown = (e) => { if (e.key === "Enter") reply(input.value); };
+  go.onclick = () => reply(input.value);
+  free.append(input, go);
+  card.append(opts, free);
+  pendingApprovals.add(ev.id);
+  return card;
+}
+
 function agentEvent(ev, ctx) {
-  const cards = (ctx.cards = ctx.cards || new Map());
-  if (ev.type === "text") ctx.logBox.append(el("div", "agent-note", ev.content));
-  else if (ev.type === "tool_call") { const c = toolCard(ev); cards.set(ev.id, c); ctx.logBox.append(c); }
+  const cards = ctx.cards;
+  const target = ev.agent && ctx.subBox ? ctx.subBox : ctx.logBox;
+  if (ev.type === "text") target.append(el("div", "agent-note", ev.content));
+  else if (ev.type === "todo") {
+    const card = todoCard(ev.todos);
+    if (ctx.todo) ctx.todo.replaceWith(card); else ctx.logBox.append(card);
+    ctx.todo = card;
+  }
+  else if (ev.type === "ask") ctx.logBox.append(askCard(ev));
+  else if (ev.type === "compact") target.append(el("div", "agent-note", "Contexto compactado para ahorrar memoria."));
+  else if (ev.type === "tool_call") {
+    if (HIDDEN_TOOLS.has(ev.name)) cards.set(ev.id, null);
+    else {
+      const c = toolCard(ev); cards.set(ev.id, c); target.append(c);
+      if (ev.name === "explore") { const sub = el("div", "agent-sub"); c.append(sub); ctx.subBox = sub; }
+    }
+  }
   else if (ev.type === "tool_result") {
     const c = cards.get(ev.id); if (!c) return;
     c.classList.remove("asks"); c.classList.add(ev.ok ? "ok" : "bad");
@@ -310,8 +368,9 @@ function agentEvent(ev, ctx) {
       const d = el("details", "tool-out"); d.append(el("summary", "", "Resultado"), el("pre", "", ev.output));
       c.append(d);
     }
+    if (ev.name === "explore") ctx.subBox = null;
   }
-  else if (ev.type === "final") { ctx.set(ev.content); ctx.paint(); }
+  else if (ev.type === "final") { if (!ev.agent) { ctx.set(ev.content); if (ev.plan) ctx.plan = ev.content; ctx.paint(); } }
   else if (ev.type === "error") { ctx.set(ctx.get() + `**Error:** ${ev.message}`); ctx.paint(); }
   else if (ev.type === "done") ctx.stats(ev);
   $("messages").scrollTop = $("messages").scrollHeight;
@@ -321,12 +380,65 @@ function denyPending() {
   for (const id of [...pendingApprovals]) { pendingApprovals.delete(id); api("/smartorch/agent/approve", { method: "POST", body: JSON.stringify({ call_id: id, approve: false }) }).catch(() => {}); }
 }
 
-function setAgent(on) {
-  state.agent = on;
-  $("modeAgent").classList.toggle("on", on); $("modeChat").classList.toggle("on", !on);
-  $("approvalMode").hidden = !on;
-  $("wsChip").hidden = !on || !state.workspace;
-  try { localStorage.setItem("smartorch_agent", on ? "1" : "0"); } catch {}
+function addPlanActions(bubble, plan) {
+  const bar = el("div", "plan-actions");
+  const go = el("button", "btn primary", "▶ Ejecutar este plan");
+  const edit = el("button", "btn", "✎ Ajustar el plan");
+  go.onclick = () => { bar.remove(); setMode("agent"); send("Ejecuta el siguiente plan aprobado, paso a paso, y verifica al terminar:\n\n" + plan, { display: "▶ Ejecutar el plan" }); };
+  edit.onclick = () => { bar.remove(); $("input").placeholder = "Dime qué quieres cambiar del plan…"; $("input").focus(); };
+  bar.append(go, edit);
+  bubble.append(bar);
+}
+
+/* ── Modo, esfuerzo y web ──────────────────────────────────── */
+function savePref(k, v) { try { localStorage.setItem("smartorch_" + k, v); } catch { /* sin almacenamiento */ } }
+function loadPref(k, d) { try { return localStorage.getItem("smartorch_" + k) ?? d; } catch { return d; } }
+
+const PLACEHOLDERS = {
+  ask: "Pregunta sobre tu proyecto o escribe / para comandos…  (Enter envía · Shift+Enter nueva línea)",
+  plan: "Describe lo que quieres lograr; investigaré y te propondré un plan, sin modificar nada…",
+  agent: "Pide un cambio o una tarea; leeré, editaré y verificaré con tu aprobación…",
+};
+
+function setMode(mode) {
+  state.mode = mode; savePref("mode", mode);
+  document.querySelectorAll("#modeSeg button").forEach((b) => b.classList.toggle("on", b.dataset.mode === mode));
+  const acting = mode !== "ask";
+  $("approvalMode").hidden = mode !== "agent";
+  $("webLabel").hidden = !acting || !state.caps?.web;
+  $("wsChip").hidden = !acting || !state.workspace;
+  $("input").placeholder = PLACEHOLDERS[mode];
+}
+
+function setEffort(effort) {
+  state.effort = effort; savePref("effort", effort);
+  document.querySelectorAll("#effortSeg button").forEach((b) => b.classList.toggle("on", b.dataset.effort === effort));
+}
+
+function setWeb(on) {
+  state.web = on; savePref("web", on ? "1" : "0");
+  $("webToggle").checked = on;
+}
+
+/* Comandos que cambian la configuracion en vez de ir al modelo */
+function handleControl(text) {
+  const m = text.match(/^\/(plan|agente|preguntar|rapido|normal|maximo|web|init)\b\s*([\s\S]*)$/i);
+  if (!m) return false;
+  const cmd = m[1].toLowerCase(), rest = m[2].trim();
+  $("input").value = ""; autosize(); hideSlash();
+  if (cmd === "plan" || cmd === "agente" || cmd === "preguntar") {
+    setMode(cmd === "plan" ? "plan" : cmd === "agente" ? "agent" : "ask");
+    if (rest) send(rest); else toast(`Modo ${cmd}`);
+  } else if (cmd === "init") {
+    setMode("agent"); send(INIT_PROMPT, { display: "/init" });
+  } else if (cmd === "web") {
+    if (!state.caps?.web) toast("La búsqueda web está desactivada en este servidor");
+    else { setWeb(!state.web); toast(state.web ? "Búsqueda web activada: cada consulta te la mostraré" : "Búsqueda web desactivada"); }
+  } else {
+    setEffort(cmd); toast(`Esfuerzo ${cmd}`);
+    if (rest) send(rest);
+  }
+  return true;
 }
 
 async function runAnalysis(text) {
@@ -359,7 +471,7 @@ function expandSlash(text) {
 function setBusy(busy) {
   state.streaming = busy;
   $("sendBtn").hidden = busy; $("stopBtn").hidden = !busy;
-  $("pipeline").hidden = !busy;
+  $("pipeline").hidden = !busy || state.mode !== "ask";
   if (!busy) document.querySelectorAll(".pipeline span").forEach((s) => (s.className = ""));
 }
 
@@ -373,14 +485,15 @@ function markStep(step) {
   });
 }
 
-async function send(raw) {
+async function send(raw, opts = {}) {
   const text = (raw ?? $("input").value).trim();
   if (!text || state.streaming) return;
   if (/^\/analizar\b/i.test(text)) return runAnalysis(text);
+  if (handleControl(text)) return;
   $("input").value = ""; autosize(); hideSlash();
   if (!state.current) state.current = (crypto.randomUUID ? crypto.randomUUID().replace(/-/g, "") : String(Date.now())).slice(0, 12);
 
-  let content = expandSlash(text), display = text;
+  let content = expandSlash(text), display = opts.display ?? text;
   if (EMBED && $("ctxToggle")?.checked) {
     const ctx = await hostContext();
     const body = ctx && (ctx.selection || ctx.text);
@@ -400,7 +513,7 @@ async function send(raw) {
   box.append(live); box.scrollTop = box.scrollHeight;
 
   let answer = "", stats = null, raf = 0;
-  const useAgent = state.agent;
+  const useAgent = state.mode !== "ask";
   let logBox = null, answerBox = bubble;
   if (useAgent) { logBox = el("div", "agent-log"); answerBox = el("div", "agent-answer"); bubble.append(logBox, answerBox); }
   const paint = () => { raf = 0; answerBox.innerHTML = renderMarkdown(answer); box.scrollTop = box.scrollHeight; };
@@ -411,13 +524,14 @@ async function send(raw) {
   try {
     if (useAgent) {
       await transport.stream("/smartorch/agent/run", {
-        mode: $("approvalMode").value, conversation_id: state.current, source: EMBED ? "vscode" : "web",
-        workspace: state.workspace || undefined, title: text,
+        mode: state.mode, approval: $("approvalMode").value, effort: state.effort, web: state.web,
+        conversation_id: state.current, source: EMBED ? "vscode" : "web",
+        workspace: state.workspace || undefined, title: opts.display ?? text,
         messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
       }, (ev) => agentEvent(ev, agentCtx), state.abort.signal);
     } else await transport.stream("/v1/chat/completions", {
-      stream: true, max_tokens: 2048, conversation_id: state.current, source: EMBED ? "vscode" : "web",
-      workspace: WORKSPACE || undefined, title: text,
+      stream: true, max_tokens: 2048, effort: state.effort, conversation_id: state.current, source: EMBED ? "vscode" : "web",
+      workspace: WORKSPACE || undefined, title: opts.display ?? text,
       messages: state.messages.map((m) => ({ role: m.role, content: m.content })),
     }, (ev) => {
       if (ev.type === "status") markStep(ev.step);
@@ -433,6 +547,7 @@ async function send(raw) {
     answerBox.innerHTML = renderMarkdown(answer || "_(sin respuesta)_");
     const meta = stats ? [stats.model, stats.steps ? `${stats.steps} pasos` : "", stats.tokens_per_sec ? `${stats.tokens_per_sec.toFixed(1)} tok/s` : "", `${stats.elapsed}s`].filter(Boolean).join(" · ") : "";
     if (meta) bubble.append(el("div", "msg-meta", meta));
+    if (agentCtx.plan) addPlanActions(bubble, agentCtx.plan);
     state.messages.push({ role: "assistant", content: answer });
     state.lastUpdated = Infinity; // este turno ya esta en pantalla: evita recargarlo desde el servidor
     await loadConversations();
@@ -444,7 +559,7 @@ async function send(raw) {
 /* ── Compositor: autosize + menú de slash ───────────────────── */
 function autosize() { const t = $("input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }
 let slashSel = 0;
-function slashMatches() { const v = $("input").value; if (!v.startsWith("/") || v.includes(" ")) return []; return Object.entries(SLASH).filter(([k]) => k.startsWith(v.slice(1).toLowerCase())); }
+function slashMatches() { const v = $("input").value; if (!v.startsWith("/") || v.includes(" ")) return []; return Object.entries({ ...CONTROL_MENU, ...SLASH }).filter(([k]) => k.startsWith(v.slice(1).toLowerCase())); }
 function hideSlash() { $("slashMenu").hidden = true; }
 function showSlash() {
   const items = slashMatches(); const menu = $("slashMenu");
@@ -498,13 +613,15 @@ async function init() {
   }
 
   $("newChat").onclick = newChat;
-  let prefAgent = NATIVE ? "1" : "0";
-  try { prefAgent = localStorage.getItem("smartorch_agent") ?? prefAgent; } catch {}
   if (!state.workspace) state.workspace = WORKSPACE;
   $("wsChip").textContent = "📁 " + (state.workspace.split(/[\\/]/).filter(Boolean).pop() || "");
-  $("modeChat").onclick = () => setAgent(false);
-  $("modeAgent").onclick = () => setAgent(true);
-  setAgent(prefAgent === "1");
+  try { state.caps = await api("/smartorch/capabilities"); } catch { state.caps = { web: false }; }
+  document.querySelectorAll("#modeSeg button").forEach((b) => (b.onclick = () => setMode(b.dataset.mode)));
+  document.querySelectorAll("#effortSeg button").forEach((b) => (b.onclick = () => setEffort(b.dataset.effort)));
+  $("webToggle").onchange = (e) => setWeb(e.target.checked);
+  setWeb(loadPref("web", "0") === "1");
+  setEffort(loadPref("effort", "normal"));
+  setMode(loadPref("mode", NATIVE ? "agent" : "ask"));
   $("menuBtn").onclick = () => $("sidebar").classList.toggle("open");
   $("themeBtn").onclick = () => {
     const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");

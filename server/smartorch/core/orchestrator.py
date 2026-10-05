@@ -12,7 +12,7 @@ Pipeline:
 import re
 import logging
 import concurrent.futures
-from smartorch.core import router, chain, compressor, context, gating, ollama_client as ollama, indexer, cache as resp_cache
+from smartorch.core import router, chain, compressor, context, effort as effort_mod, gating, ollama_client as ollama, indexer, cache as resp_cache
 from smartorch.config import MAX_TOKENS_OUT, MODEL_CONTEXT_CHARS, MODELS, SPECULATIVE_ENABLED, SPECULATIVE_MIN_TOKENS
 
 logger = logging.getLogger(__name__)
@@ -312,6 +312,15 @@ def _run_verification(query: str, draft: str, model: str) -> str:
     return draft
 
 
+def decide_thinking(messages: list[dict], task_type: str, user_query: str, knobs) -> bool:
+    """Razonar en dos pasos: lo decide el esfuerzo (Rapido nunca, Maximo siempre que la tarea lo amerite)."""
+    if knobs.thinking is False:
+        return False
+    if knobs.thinking is True:
+        return task_type in ("code", "agent", "security") and len(user_query.strip()) > 30
+    return chain.should_think(messages, task_type)
+
+
 def run(messages: list[dict], temperature: float = 0.3, max_tokens: int = MAX_TOKENS_OUT) -> dict:
     """
     Ejecuta el pipeline completo de SmartOrch.
@@ -348,7 +357,9 @@ def run(messages: list[dict], temperature: float = 0.3, max_tokens: int = MAX_TO
             user_query = m.get("content", "")[:800]
             break
 
-    if task_type == "agent" and _needs_decomposition(user_query):
+    knobs = effort_mod.current().chat
+
+    if task_type == "agent" and knobs.decompose is not False and _needs_decomposition(user_query):
         subtasks = _decompose_task(user_query, model)
         if subtasks:
             logger.info(f"[ORCH] Decomposición: {len(subtasks)} pasos")
@@ -378,10 +389,11 @@ def run(messages: list[dict], temperature: float = 0.3, max_tokens: int = MAX_TO
                 }
 
     # 5b. Decidir estrategia de generación
-    use_thinking = chain.should_think(messages, task_type)
+    use_thinking = decide_thinking(messages, task_type, user_query, knobs)
     use_speculative = (
         not use_thinking
         and SPECULATIVE_ENABLED
+        and knobs.speculative is not False
         and task_type == "code"
         and max_tokens >= SPECULATIVE_MIN_TOKENS
         and len(user_query) > 80
@@ -391,7 +403,8 @@ def run(messages: list[dict], temperature: float = 0.3, max_tokens: int = MAX_TO
     use_ensemble = (
         use_thinking
         and task_type == "code"
-        and len(user_query) > 120
+        and knobs.ensemble is not False
+        and len(user_query) > (80 if knobs.ensemble else 120)
         and model != MODELS.get("chat", "hermes3:8b")  # evitar llamar 2x el mismo modelo
     )
 

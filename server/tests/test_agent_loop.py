@@ -17,7 +17,7 @@ class FakeModel:
         self.replies = list(replies)
         self.received = []
 
-    def __call__(self, model, messages):
+    def __call__(self, model, messages, specs=None, eff=None):
         self.received.append([dict(m) for m in messages])
         if not self.replies:
             return {"role": "assistant", "content": "fin"}
@@ -38,12 +38,13 @@ class AgentLoopTests(unittest.TestCase):
         Path(self.root, "app.py").write_text("def hola():\n    return 'hola'\n", encoding="utf-8")
         audit_dir = tempfile.mkdtemp(prefix="so-audit-")
         for p in (mock.patch.object(datadir, "DATA_DIR", audit_dir),
+                  mock.patch.object(loop, "APPROVAL_TIMEOUT", 5),
                   mock.patch.object(loop.analysis, "get_profile", side_effect=RuntimeError("sin analisis"))):
             p.start()
             self.addCleanup(p.stop)
         self.audit_dir = audit_dir
 
-    def play(self, replies, mode="ask", answers=(), max_steps=None, timeout=None, user="haz algo"):
+    def play(self, replies, mode="ask", answers=(), max_steps=None, timeout=None, user="revisa esto"):
         """Corre el agente en un hilo y responde las aprobaciones pendientes con `answers`."""
         fake = FakeModel(replies)
         events: list[dict] = []
@@ -51,7 +52,7 @@ class AgentLoopTests(unittest.TestCase):
         queue = list(answers)
 
         def worker():
-            for ev in loop.run([{"role": "user", "content": user}], self.root, mode=mode, max_steps=max_steps):
+            for ev in loop.run([{"role": "user", "content": user}], self.root, approval=mode, max_steps=max_steps):
                 events.append(ev)
 
         patches = [mock.patch.object(loop, "_chat", fake)]
@@ -60,7 +61,7 @@ class AgentLoopTests(unittest.TestCase):
         for p in patches:
             p.start()
         try:
-            th = threading.Thread(target=worker)
+            th = threading.Thread(target=worker, daemon=True)
             th.start()
             deadline = time.time() + 20
             while th.is_alive() and time.time() < deadline:
@@ -96,9 +97,9 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("def hola()", tool_msg["content"])
 
     def test_edit_waits_for_approval_then_applies_and_is_audited(self):
-        events, _ = self.play([call("edit_file", path="app.py", old_text="return 'hola'", new_text="return 'adios'"), final()],
+        events, _ = self.play([call("read_file", path="app.py"), call("edit_file", path="app.py", old_text="return 'hola'", new_text="return 'adios'"), final()],
                               answers=[True])
-        tc = next(e for e in events if e["type"] == "tool_call")
+        tc = next(e for e in events if e["type"] == "tool_call" and e["name"] == "edit_file")
         self.assertTrue(tc["needs_approval"])
         self.assertIn("-    return 'hola'", tc["preview"])
         self.assertIn("approval_wait", self.types(events))
@@ -107,13 +108,13 @@ class AgentLoopTests(unittest.TestCase):
             self.assertIn("edit_file", f.read())
 
     def test_rejected_edit_changes_nothing_and_model_is_told(self):
-        events, fake = self.play([call("edit_file", path="app.py", old_text="'hola'", new_text="'x'"), final()], answers=[False])
+        events, fake = self.play([call("read_file", path="app.py"), call("edit_file", path="app.py", old_text="'hola'", new_text="'x'"), final()], answers=[False])
         self.assertIn("hola", self.read_app())
         self.assertNotIn("'x'", self.read_app())
-        res = next(e for e in events if e["type"] == "tool_result")
+        res = [e for e in events if e["type"] == "tool_result"][-1]
         self.assertFalse(res["ok"])
         self.assertIn("rechaz", res["output"])
-        self.assertIn("rechaz", [m for m in fake.received[1] if m["role"] == "tool"][0]["content"])
+        self.assertIn("rechaz", [m for m in fake.received[2] if m["role"] == "tool"][-1]["content"])
 
     def test_unanswered_approval_times_out_and_cancels(self):
         events, _ = self.play([call("write_file", path="nuevo.txt", content="x"), final()], timeout=0.3)
@@ -130,7 +131,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertTrue(outputs and all("solo lectura" in o for o in outputs))
 
     def test_auto_edits_applies_edits_but_still_asks_for_commands(self):
-        events, _ = self.play([call("edit_file", path="app.py", old_text="'hola'", new_text="'auto'"),
+        events, _ = self.play([call("read_file", path="app.py"), call("edit_file", path="app.py", old_text="'hola'", new_text="'auto'"),
                                call("run_command", command="echo hola"), final()],
                               mode="auto_edits", answers=[False])
         self.assertIn("auto", self.read_app())
@@ -175,34 +176,71 @@ class AgentLoopTests(unittest.TestCase):
                 events = list(loop.run([{"role": "user", "content": "x"}], bad))
             self.assertEqual([e["type"] for e in events], ["error"], bad)
 
-    def test_answer_without_opening_the_named_file_is_rejected(self):
-        events, fake = self.play([final("ya se lo que hace"), call("read_file", path="app.py"), final("hace hola")],
-                                 user="explica app.py")
-        finals = [e["content"] for e in events if e["type"] == "final"]
-        self.assertEqual(finals, ["hace hola"])  # la primera respuesta, sin leer, no llega al usuario
-        self.assertTrue(any(e["type"] == "tool_call" and e["name"] == "read_file" for e in events))
+    def test_named_file_is_preloaded_so_the_model_does_not_have_to_ask_for_it(self):
+        events, fake = self.play([final("hace hola")], user="explica app.py")
+        first_user = fake.received[0][-1]["content"]
+        self.assertIn("ya están cargados", first_user)
+        self.assertIn("def hola()", first_user)
+        self.assertEqual(len(fake.received), 1)  # respondio directo: sin llamadas extra ni regaños
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["hace hola"])
+
+    def test_readme_is_preloaded_for_general_questions_but_not_for_code_tasks(self):
+        Path(self.root, "README.md").write_text("# Proyecto\nHace cosas utiles.\n", encoding="utf-8")
+        _, fake = self.play([final("ok")], user="explica este proyecto")
+        self.assertIn("Hace cosas utiles", fake.received[0][-1]["content"])
+        _, fake = self.play([final("ok")], user="arregla el bug de este proyecto")
+        self.assertNotIn("Hace cosas utiles", fake.received[0][-1]["content"])
+
+    def test_secret_files_are_never_preloaded(self):
+        Path(self.root, ".env").write_text("TOKEN=supersecreto\n", encoding="utf-8")
+        _, fake = self.play([final("ok")], user="explica .env")
+        self.assertNotIn("supersecreto", fake.received[0][-1]["content"])
+
+    def test_action_task_without_edits_gets_two_nudges_then_an_honest_warning(self):
+        events, fake = self.play([final("listo, ya lo hice"), final("de verdad"), final("sigo sin editar")],
+                                 user="agrega una función de despedida")
         nudge = fake.received[1][-1]
         self.assertEqual(nudge["role"], "user")
-        self.assertIn("Aún no abriste app.py", nudge["content"])
+        self.assertIn("decide y actúa", nudge["content"])
+        self.assertIn("replace_in_files", nudge["content"])
+        final_text = [e["content"] for e in events if e["type"] == "final"][0]
+        self.assertTrue(final_text.startswith("⚠ No modifiqué ningún archivo."))
+        self.assertEqual(len(fake.received), 3)  # dos empujones y se acepta la respuesta, con la advertencia
 
-    def test_nudges_are_limited_so_the_loop_always_ends(self):
-        events, _ = self.play([final("a"), final("b"), final("c")], user="explica app.py")
-        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["c"])
+    def test_action_task_that_edits_is_not_nudged_or_warned(self):
+        events, fake = self.play([call("read_file", path="app.py"), call("edit_file", path="app.py", old_text="'hola'", new_text="'adios'"), final("hecho")],
+                                 answers=[True], user="cambia el saludo a adios")
+        self.assertEqual(len(fake.received), 3)
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["hecho"])
 
-    def test_general_project_question_requires_reading_the_readme(self):
-        Path(self.root, "README.md").write_text("# Proyecto\nHace cosas.\n", encoding="utf-8")
-        events, _ = self.play([final("x"), call("read_file", path="README.md"), final("lei el README")],
-                              user="explica este proyecto")
-        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["lei el README"])
-
-    def test_no_nudge_when_nothing_needs_to_be_read(self):
-        events, fake = self.play([final("hola!")], user="hola")
-        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["hola!"])
+    def test_readonly_and_plan_never_push_the_model_to_edit(self):
+        events, fake = self.play([final("no puedo editar")], mode="readonly", user="agrega una función")
         self.assertEqual(len(fake.received), 1)
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["no puedo editar"])
 
-    def test_already_read_file_is_not_requested_again(self):
+    def test_already_read_file_does_not_trigger_anything_extra(self):
         events, fake = self.play([call("read_file", path="app.py"), final("listo")], user="explica app.py")
-        self.assertEqual(len(fake.received), 2)  # solo la lectura y la respuesta, sin empujones
+        self.assertEqual(len(fake.received), 2)
+
+    def test_fixing_a_bug_never_edits_the_tests(self):
+        Path(self.root, "tests").mkdir()
+        Path(self.root, "tests", "test_app.py").write_text("assert 1\n", encoding="utf-8")
+        events, _ = self.play([call("edit_file", path="tests/test_app.py", old_text="assert 1", new_text="assert 2"), final()],
+                              answers=[True], user="los tests fallan, arréglalo")
+        self.assertIn("assert 1", Path(self.root, "tests", "test_app.py").read_text(encoding="utf-8"))
+        self.assertIn("especificación", [e for e in events if e["type"] == "tool_result"][0]["output"])
+        self.assertNotIn("approval_wait", self.types(events))
+
+    def test_writing_tests_is_allowed_when_asked(self):
+        self.assertFalse(loop._protects_tests("agrega un test para hola"))
+        self.assertTrue(loop._protects_tests("hay un bug, corrígelo"))
+
+    def test_append_file_adds_code_without_old_text(self):
+        events, _ = self.play([call("read_file", path="app.py"), call("append_file", path="app.py", content="def adios():\n    return 'adios'"),
+                               final()], answers=[True], user="agrega una función adios")
+        text = self.read_app()
+        self.assertTrue(text.startswith("def hola():") and text.rstrip().endswith("return 'adios'"))
+        self.assertIn("Sintaxis válida", [e for e in events if e["type"] == "tool_result"][-1]["output"])
 
     def test_tool_log_summarises_actions(self):
         events, _ = self.play([call("read_file", path="app.py"), final()])
