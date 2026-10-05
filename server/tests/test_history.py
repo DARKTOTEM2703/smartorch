@@ -1,14 +1,22 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
-_tmp = tempfile.mkdtemp(prefix="smartorch-test-")
-os.environ["SMARTORCH_DATA_DIR"] = _tmp
-
-from smartorch.core import history  # noqa: E402
+from smartorch.core import history
 
 
 class HistoryTests(unittest.TestCase):
+    def setUp(self):
+        # Base temporal propia: jamas tocar el historial real del usuario
+        tmp = tempfile.mkdtemp(prefix="smartorch-test-")
+        for p in (
+            mock.patch.object(history, "DB_PATH", os.path.join(tmp, "history.db")),
+            mock.patch.object(history, "_ready", False),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+
     def test_save_turn_creates_conversation_with_title(self):
         history.save_turn("t1", "web", "Explícame los decoradores de Python", "Un decorador es...")
         conv = history.get_conversation("t1")

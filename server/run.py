@@ -74,27 +74,40 @@ def main():
             watcher.stop()
 
 
+def _purge_unscoped_once(purge):
+    """Borra una sola vez los fragmentos de versiones anteriores, que no guardaban su workspace."""
+    from smartorch.core import datadir
+    marker = os.path.join(datadir.CHROMA_DIR, ".scoped-v1")
+    if os.path.exists(marker):
+        return
+    removed = purge()
+    os.makedirs(datadir.CHROMA_DIR, exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("ok")
+    logger.info(f"[RAG] Limpieza única: {removed} fragmentos antiguos sin workspace eliminados")
+
+
 def _build_rag(workspace: str, force: bool = False):
     """Construye el índice semántico RAG si las deps están disponibles."""
     try:
-        from smartorch.rag.store import collection_ready, chunk_count
+        from smartorch.core import workspaces
+        from smartorch.rag.store import chunk_count, purge_unscoped, root_chunk_count, sync_root
         from smartorch.rag.chunker import index_directory
-        from smartorch.rag.store import upsert_chunks, clear
 
-        if collection_ready() and not force:
-            logger.info(f"[RAG] ChromaDB: {chunk_count()} chunks (caché)")
+        root = workspaces.register(workspace)
+        _purge_unscoped_once(purge_unscoped)
+
+        if root_chunk_count(root) > 0 and not force:
+            logger.info(f"[RAG] ChromaDB: {chunk_count()} chunks, {workspace} ya indexado (caché)")
             return
 
         logger.info(f"[RAG] Construyendo índice semántico para {workspace}...")
         logger.info("[RAG] Cargando sentence-transformers (primera vez: ~10s)...")
 
-        if force:
-            clear()
-
         chunks = index_directory(workspace)
+        removed = sync_root(root, chunks)
         if chunks:
-            upsert_chunks(chunks)
-            logger.info(f"[RAG] Semántico: {len(chunks)} chunks indexados")
+            logger.info(f"[RAG] Semántico: {len(chunks)} chunks indexados ({removed} obsoletos eliminados)")
         else:
             logger.info("[RAG] Sin archivos para indexar")
 

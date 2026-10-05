@@ -472,6 +472,12 @@ async def index_workspace(req: IndexRequest):
     }
 
 
+@app.get("/smartorch/data-dir", dependencies=[Depends(verify_key)])
+async def data_dir_info():
+    from smartorch.core import datadir
+    return await asyncio.to_thread(datadir.info)
+
+
 # ── Historial compartido (web · CLI · editor) ────────────────────────────────
 class ConversationCreate(BaseModel):
     title:     Optional[str] = ""
@@ -571,11 +577,12 @@ def _get_rag_context(msgs: list[dict]) -> str:
         return idx.search_formatted(user_text, top_k=4, max_chars=2500)
 
 def _build_rag_index(root: str) -> int:
+    from smartorch.core import workspaces
     from smartorch.rag.chunker import index_directory
-    from smartorch.rag.store import upsert_chunks
+    from smartorch.rag.store import sync_root
+    canonical = workspaces.register(root)
     chunks = index_directory(root)
-    if chunks:
-        upsert_chunks(chunks)
+    sync_root(canonical, chunks)
     return len(chunks)
 
 

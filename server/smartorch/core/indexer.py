@@ -10,7 +10,9 @@ import hashlib
 from pathlib import Path
 from smartorch.config import AGENT_WORK_DIR
 
-INDEX_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "index.json")
+from smartorch.core.datadir import INDEX_FILE, migrate_legacy
+
+migrate_legacy()
 
 EXTENSIONS = {'.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.rs', '.java',
               '.c', '.cpp', '.h', '.cs', '.rb', '.php', '.md', '.yaml', '.yml', '.json'}

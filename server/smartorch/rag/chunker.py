@@ -24,10 +24,11 @@ OVERLAP_LINES = 15
 MAX_FILE_SIZE = 400_000  # 400KB
 
 
-def chunk_file(path: str) -> list[dict]:
+def chunk_file(path: str, root: str = "") -> list[dict]:
     """
     Divide un archivo en chunks con overlap.
-    Cada chunk incluye la ruta y número de línea para trazabilidad.
+    Cada chunk incluye la ruta y número de línea para trazabilidad, y el
+    workspace (root) al que pertenece para poder filtrar la búsqueda.
     """
     try:
         text = Path(path).read_text(encoding="utf-8", errors="ignore")
@@ -57,6 +58,7 @@ def chunk_file(path: str) -> list[dict]:
             "text": chunk_text,
             "metadata": {
                 "file":       relpath,
+                "root":       root,
                 "start_line": i + 1,
                 "end_line":   i + len(segment),
             },
@@ -82,7 +84,7 @@ def index_directory(root: str) -> list[dict]:
                 continue
             if fpath.stat().st_size > MAX_FILE_SIZE:
                 continue
-            all_chunks.extend(chunk_file(str(fpath)))
+            all_chunks.extend(chunk_file(str(fpath), str(root_path)))
 
     return all_chunks
 

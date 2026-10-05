@@ -2,8 +2,7 @@
 Historial unico de conversaciones (SQLite).
 
 Lo comparten la web, la CLI y VS Code: una conversacion iniciada en un lado
-aparece en los demas. Los datos viven en ~/.smartorch/history.db
-(o en SMARTORCH_DATA_DIR).
+aparece en los demas. La ubicacion la decide smartorch.core.datadir.
 """
 import os
 import sqlite3
@@ -13,8 +12,10 @@ import uuid
 from contextlib import contextmanager
 from typing import Optional
 
-DATA_DIR = os.environ.get("SMARTORCH_DATA_DIR") or os.path.join(os.path.expanduser("~"), ".smartorch")
-DB_PATH = os.path.join(DATA_DIR, "history.db")
+from smartorch.core import datadir
+
+DATA_DIR = datadir.DATA_DIR
+DB_PATH = datadir.HISTORY_DB
 
 _lock = threading.Lock()
 _ready = False

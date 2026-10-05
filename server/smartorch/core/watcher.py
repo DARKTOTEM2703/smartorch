@@ -6,6 +6,7 @@ import os
 import threading
 import time
 import logging
+from smartorch.core import workspaces
 from smartorch.core.indexer import get_index, INDEX_FILE
 
 logger = logging.getLogger(__name__)
@@ -75,11 +76,10 @@ class WorkspaceWatcher:
         # Reindexar también ChromaDB semántico
         try:
             from smartorch.rag.chunker import index_directory
-            from smartorch.rag.store import upsert_chunks
+            from smartorch.rag.store import sync_root
             chunks = index_directory(self.root)
-            if chunks:
-                upsert_chunks(chunks)
-                logger.info(f"[WATCHER] RAG semántico actualizado: {len(chunks)} chunks")
+            removed = sync_root(workspaces.canonical(self.root), chunks)
+            logger.info(f"[WATCHER] RAG semántico actualizado: {len(chunks)} chunks ({removed} obsoletos eliminados)")
         except Exception as e:
             logger.warning(f"[WATCHER] RAG semántico no actualizado: {e}")
 

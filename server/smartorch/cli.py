@@ -19,6 +19,7 @@ Uso:
   smartorch doc archivo.py          # Generar documentación
   smartorch status                  # Estado del servidor + métricas
   smartorch serve                   # Iniciar el servidor SmartOrch
+  smartorch data [carpeta]          # Ver o cambiar dónde se guardan historial, índice y RAG
   smartorch history                 # Conversaciones guardadas (web · CLI · editor)
   smartorch resume [id]             # Retomar una conversación (la última por defecto)
 """
@@ -673,6 +674,49 @@ def _cmd_status():
     print()
 
 
+def _cmd_data(new_path: str | None, move: bool, reset: bool):
+    """Muestra o cambia la carpeta donde SmartOrch guarda historial, indice y RAG."""
+    from smartorch.core import datadir
+
+    if reset or new_path:
+        if _server_alive():
+            print(_c(C.YELLOW, "  Detén el servidor antes de cambiar la carpeta de datos (Ctrl+C en su terminal)."))
+            sys.exit(1)
+        try:
+            if reset:
+                datadir.reset_data_dir()
+                print(_c(C.GREEN, f"  Carpeta de datos restablecida: {datadir.BOOTSTRAP_DIR}"))
+                return
+            result = datadir.set_data_dir(new_path, move=move)
+        except (OSError, PermissionError) as e:
+            print(_c(C.RED, f"  {e}"))
+            sys.exit(1)
+        if not result["changed"]:
+            print(_c(C.GRAY, "  Ya se usa esa carpeta."))
+        else:
+            print(_c(C.GREEN + C.BOLD, f"  Datos en: {result['data_dir']}"))
+            if result["copied"]:
+                print(_c(C.GRAY, f"  Copiado: {', '.join(result['copied'])}"))
+                print(_c(C.GRAY, f"  Lo anterior sigue en {result['previous']} (bórralo cuando confirmes que todo funciona)."))
+            print(_c(C.GRAY, "  Inicia el servidor de nuevo: smartorch serve"))
+        return
+
+    data = datadir.info()
+    print()
+    print(_c(C.BOLD, "  Datos de SmartOrch"))
+    print(_c(C.GRAY, "  " + "─" * 50))
+    print(f"  Carpeta:       {_c(C.CYAN, data['data_dir'])} {_c(C.GRAY, '(personalizada)' if data['custom'] else '(por defecto)')}")
+    if data["free_gb"] is not None:
+        print(f"  Espacio libre: {_c(C.WHITE, str(data['free_gb']) + ' GB')}")
+    for item in data["items"]:
+        mark = _c(C.GREEN, "✔") if item["exists"] else _c(C.GRAY, "·")
+        print(f"  {mark} {item['label']:<28} {_c(C.GRAY, str(item['mb']) + ' MB')}")
+    print()
+    print(_c(C.GRAY, "  Cambiar:    smartorch data <carpeta>      (copia lo existente)"))
+    print(_c(C.GRAY, "  Restablecer: smartorch data --reset"))
+    print()
+
+
 def _cmd_serve():
     """Inicia el servidor SmartOrch en primer plano."""
     run_py = os.path.join(SERVER_DIR, "run.py")
@@ -723,6 +767,8 @@ def main():
         action="store_true",
         help="Desactivar streaming (esperar respuesta completa)",
     )
+    parser.add_argument("--no-move", action="store_true", help="smartorch data: no copiar los datos existentes")
+    parser.add_argument("--reset", action="store_true", help="smartorch data: volver a la carpeta por defecto")
     parser.add_argument(
         "--url",
         default=None,
@@ -747,6 +793,10 @@ def main():
 
     if args.command == "status":
         _cmd_status()
+        return
+
+    if args.command == "data":
+        _cmd_data(args.input, move=not args.no_move, reset=args.reset)
         return
 
     # Auto-arrancar servidor para todo lo demás
