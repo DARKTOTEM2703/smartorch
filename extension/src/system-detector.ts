@@ -255,6 +255,10 @@ async function _pingOllama(): Promise<boolean> {
 
 function _detectDiskFree(platform: string): number {
   try {
+    const s = (fs as any).statfsSync?.(os.homedir());
+    if (s) return Math.round((s.bavail * s.bsize) / 1_073_741_824);
+  } catch { /* fall back to shell */ }
+  try {
     if (platform === 'win32') {
       const raw = execSync(
         'wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace /format:value',

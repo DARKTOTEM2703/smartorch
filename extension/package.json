@@ -1,8 +1,8 @@
-{
+﻿{
   "name": "smartorch",
-  "displayName": "SmartOrch — Local AI",
-  "description": "Asistente de IA local con RAG automático. Modelos pequeños, inteligencia grande. Sin pagar.",
-  "version": "0.1.3",
+  "displayName": "SmartOrch â€” Local AI",
+  "description": "Asistente de IA local con RAG automÃ¡tico. Modelos pequeÃ±os, inteligencia grande. Sin pagar.",
+  "version": "0.1.4",
   "publisher": "jafeth",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["AI", "Programming Languages", "Other"],
@@ -28,19 +28,19 @@
         "id": "smartorch.assistant",
         "name": "smartorch",
         "fullName": "SmartOrch",
-        "description": "AI local · SOLID/DRY · YARA/Sigma · Sin enviar código a la nube",
+        "description": "AI local Â· SOLID/DRY Â· YARA/Sigma Â· Sin enviar cÃ³digo a la nube",
         "isSticky": true,
         "commands": [
           { "name": "solid",    "description": "Aplicar principios SOLID y DRY" },
           { "name": "refactor", "description": "Refactorizar con clean architecture" },
           { "name": "review",   "description": "Code review exhaustivo" },
           { "name": "test",     "description": "Generar tests unitarios" },
-          { "name": "explain",  "description": "Explicar el código" },
-          { "name": "doc",      "description": "Generar documentación" },
+          { "name": "explain",  "description": "Explicar el cÃ³digo" },
+          { "name": "doc",      "description": "Generar documentaciÃ³n" },
           { "name": "yara",     "description": "Generar regla YARA" },
           { "name": "sigma",    "description": "Generar regla Sigma (MITRE ATT&CK)" },
           { "name": "c2",       "description": "Analizar C2/malware (educativo/defensivo)" },
-          { "name": "pentest",  "description": "Guía de pentest" },
+          { "name": "pentest",  "description": "GuÃ­a de pentest" },
           { "name": "web",      "description": "Feature web (React/FastAPI/Vue)" },
           { "name": "mobile",   "description": "Feature mobile (Flutter/React Native)" },
           { "name": "optimize", "description": "Optimizar rendimiento y complejidad" }
@@ -49,29 +49,29 @@
     ],
     "commands": [
       { "command": "smartorch.openChat",       "title": "SmartOrch: Abrir Chat",              "icon": "media/icons/smartorch-activity.svg" },
-      { "command": "smartorch.explain",    "title": "SmartOrch: /explain — Explicar código" },
-      { "command": "smartorch.fix",        "title": "SmartOrch: /fix — Corregir bugs" },
-      { "command": "smartorch.refactor",       "title": "SmartOrch: /refactor — Refactorizar" },
-      { "command": "smartorch.solid",          "title": "SmartOrch: /solid — Aplicar SOLID/DRY" },
-      { "command": "smartorch.review",         "title": "SmartOrch: /review — Code review" },
-      { "command": "smartorch.test",           "title": "SmartOrch: /test — Generar tests" },
-      { "command": "smartorch.docstring",      "title": "SmartOrch: /doc — Generar documentación" },
-      { "command": "smartorch.optimize",       "title": "SmartOrch: /optimize — Optimizar rendimiento" },
-      { "command": "smartorch.yara",           "title": "SmartOrch: /yara — Generar regla YARA" },
-      { "command": "smartorch.sigma",          "title": "SmartOrch: /sigma — Generar regla Sigma" },
-      { "command": "smartorch.c2",             "title": "SmartOrch: /c2 — Analizar C2/malware" },
-      { "command": "smartorch.pentest",        "title": "SmartOrch: /pentest — Guía de pentest" },
-      { "command": "smartorch.web",            "title": "SmartOrch: /web — Feature web" },
-      { "command": "smartorch.mobile",         "title": "SmartOrch: /mobile — Feature mobile" },
+      { "command": "smartorch.explain",    "title": "SmartOrch: /explain â€” Explicar cÃ³digo" },
+      { "command": "smartorch.fix",        "title": "SmartOrch: /fix â€” Corregir bugs" },
+      { "command": "smartorch.refactor",       "title": "SmartOrch: /refactor â€” Refactorizar" },
+      { "command": "smartorch.solid",          "title": "SmartOrch: /solid â€” Aplicar SOLID/DRY" },
+      { "command": "smartorch.review",         "title": "SmartOrch: /review â€” Code review" },
+      { "command": "smartorch.test",           "title": "SmartOrch: /test â€” Generar tests" },
+      { "command": "smartorch.docstring",      "title": "SmartOrch: /doc â€” Generar documentaciÃ³n" },
+      { "command": "smartorch.optimize",       "title": "SmartOrch: /optimize â€” Optimizar rendimiento" },
+      { "command": "smartorch.yara",           "title": "SmartOrch: /yara â€” Generar regla YARA" },
+      { "command": "smartorch.sigma",          "title": "SmartOrch: /sigma â€” Generar regla Sigma" },
+      { "command": "smartorch.c2",             "title": "SmartOrch: /c2 â€” Analizar C2/malware" },
+      { "command": "smartorch.pentest",        "title": "SmartOrch: /pentest â€” GuÃ­a de pentest" },
+      { "command": "smartorch.web",            "title": "SmartOrch: /web â€” Feature web" },
+      { "command": "smartorch.mobile",         "title": "SmartOrch: /mobile â€” Feature mobile" },
       { "command": "smartorch.indexWorkspace", "title": "SmartOrch: Indexar workspace (RAG)" },
-      { "command": "smartorch.status",         "title": "SmartOrch: Ver estado y métricas" },
+      { "command": "smartorch.status",         "title": "SmartOrch: Ver estado y mÃ©tricas" },
       { "command": "smartorch.startServer",    "title": "SmartOrch: Iniciar servidor" },
-      { "command": "smartorch.onboarding",     "title": "SmartOrch: Configuración inicial (analizar PC)" }
+      { "command": "smartorch.onboarding",     "title": "SmartOrch: ConfiguraciÃ³n inicial (analizar PC)" }
     ],
     "submenus": [
       {
         "id": "smartorch.contextMenu",
-        "label": "⚡ SmartOrch"
+        "label": "âš¡ SmartOrch"
       }
     ],
     "menus": {
@@ -169,3 +169,4 @@
     "typescript": "^5.3.0"
   }
 }
+
