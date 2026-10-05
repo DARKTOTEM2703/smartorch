@@ -135,6 +135,11 @@ class RunState:
     protect_tests: bool = False
     tests_fresh: bool = False
     first_failure: str = ""
+    last_failure: str = ""
+    snapshot: dict = field(default_factory=dict)
+    snapshot_paths: Optional[set] = None
+    rolled_back: int = 0
+    preloaded: set = field(default_factory=set)
     last_tests_ok: Optional[bool] = None
     repairs: int = 0
     listing: dict = field(default_factory=dict)
@@ -176,6 +181,52 @@ def _chat(model: str, messages: list[dict], specs: list[dict], eff: "effort_mod.
             return json.loads(resp.read().decode())["message"]
     except urllib.error.URLError as e:
         raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}") from e
+
+
+def _chat_json(model: str, messages: list[dict], schema: dict, eff: "effort_mod.Effort") -> str:
+    """Respuesta restringida por un esquema JSON (Ollama la fuerza al decodificar: no puede salirse del formato)."""
+    payload = json.dumps({
+        "model": model, "messages": messages, "stream": False, "format": schema,
+        "options": {"temperature": 0.1, "num_ctx": eff.num_ctx, "num_predict": eff.num_predict},
+    }).encode()
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=payload, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read().decode())["message"].get("content", "")
+    except urllib.error.URLError as e:
+        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}") from e
+
+
+def _forced_calls(st: "RunState", convo: list[dict], specs: list[dict], narration: str) -> list[dict]:
+    """
+    El modelo narra lo que haria en vez de llamar a una herramienta. Se le pide la llamada como JSON
+    restringido por esquema: asi decide el QUE, pero ya no puede responder con prosa.
+    """
+    by_name = {s["function"]["name"]: s["function"] for s in specs}
+    doing = [n for n in ("append_file", "edit_file", "write_file", "replace_in_files") if n in by_name]
+    if not doing:
+        return []
+    schema = {"type": "object", "required": ["tool", "arguments"],
+              "properties": {"tool": {"type": "string", "enum": doing}, "arguments": {"type": "object"}}}
+    guide = "; ".join(f"{n}({', '.join(by_name[n]['parameters']['properties'])})" for n in doing)
+    ask = ("Ejecuta ahora lo que describiste. Responde SOLO con la llamada a la herramienta en JSON: "
+           '{"tool": <nombre>, "arguments": {...}}. Herramientas: ' + guide +
+           ". append_file agrega código nuevo al final de un archivo; edit_file cambia texto que ya existe.")
+    messages = [m for m in convo if m.get("role") != "system" or m is convo[0]]
+    messages = messages + [{"role": "assistant", "content": narration or "Voy a hacer el cambio."}, {"role": "user", "content": ask}]
+    try:
+        data = json.loads(_chat_json(st.model, messages, schema, st.eff))
+    except (ValueError, ConnectionError):
+        return []
+    name, args = data.get("tool"), data.get("arguments")
+    if name not in doing or not isinstance(args, dict):
+        return []
+    if name == "edit_file" and not str(args.get("old_text", "")).strip() and args.get("new_text"):
+        name, args = "append_file", {"path": args.get("path", ""), "content": args["new_text"]}  # no hay texto que reemplazar: es agregar
+    required = by_name[name]["parameters"].get("required", [])
+    if any(not args.get(k) for k in required):
+        return []
+    return [{"name": name, "args": args}]
 
 
 def _extract_calls(message: dict) -> list[dict]:
@@ -417,6 +468,7 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
     convo += [{"role": m["role"], "content": m["content"]} for m in messages if m.get("role") != "system"]
     user_text = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
     preload = _preload(user_text, st)
+    st.preloaded = set(st.read_paths)  # tras deshacer un intento, el proyecto vuelve a ser igual a lo que se les mostro
     if not plan and is_action(user_text):
         remembered = experience.render(_safe(experience.recall, str(root), user_text) or [])
         if remembered:
@@ -431,9 +483,21 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
     big = len(_project_files(st)) >= EXPLORE_MIN_FILES
     specs = T.specs_for(plan=plan, explore=eff.explore and big, web=web_on)
     limit = max_steps or eff.max_steps
+    base_convo = list(convo)
     _set_active(+1)
     try:
         final, steps = yield from _loop(convo, st, specs, user_text, limit, tag=None, depth=0)
+        attempt = 1
+        while _wants_retry(st, user_text, attempt):
+            attempt += 1
+            hint = _retry_hint(st)
+            restored = _rollback(st)
+            st.log.append(f"↺ intento {attempt}/{eff.candidates}: se deshicieron {restored} cambio(s)")
+            yield {"type": "candidate", "attempt": attempt, "of": eff.candidates, "restored": restored}
+            retry = list(base_convo)
+            retry[-1] = {**retry[-1], "content": retry[-1]["content"] + "\n\n" + hint}
+            final, more = yield from _loop(retry, st, specs, user_text, limit, tag=None, depth=0)
+            steps += more
     finally:
         _set_active(-1)
 
@@ -463,6 +527,61 @@ def _learn(st: "RunState", user_text: str, final: str) -> bool:
     return bool(_safe(experience.record, str(st.root), user_text, files, final or "", lesson))
 
 
+SNAPSHOT_MAX_BYTES = 200_000
+
+
+def _take_snapshot(st: "RunState") -> None:
+    """Copia del proyecto antes del primer cambio, para poder deshacer un intento fallido."""
+    paths = set()
+    for p in analysis._walk(st.root):
+        paths.add(p)
+        try:
+            if p.stat().st_size <= SNAPSHOT_MAX_BYTES:
+                st.snapshot[p] = p.read_bytes()
+        except OSError:
+            pass
+    st.snapshot_paths = paths
+
+
+def _rollback(st: "RunState") -> int:
+    """Deja el proyecto como estaba antes del intento: restaura lo editado y borra lo creado. Devuelve cuantos archivos tocó."""
+    touched = 0
+    for p, data in st.snapshot.items():
+        try:
+            if not p.exists() or p.read_bytes() != data:
+                p.write_bytes(data)
+                touched += 1
+        except OSError:
+            pass
+    for p in set(analysis._walk(st.root)) - (st.snapshot_paths or set()):
+        try:
+            p.unlink()
+            touched += 1
+        except OSError:
+            pass
+    st.edited.clear()
+    st.read_paths = set(st.preloaded)
+    st.listing.clear()
+    st.tests_fresh = False
+    st.last_tests_ok = None
+    st.repairs = 0
+    st.rolled_back += 1
+    return touched
+
+
+def _wants_retry(st: "RunState", user_text: str, attempt: int) -> bool:
+    """Los tests siguen fallando tras agotar las reparaciones: si quedan intentos, se deshace y se prueba otro enfoque."""
+    return (not st.plan and st.approval != "readonly" and attempt < st.eff.candidates and bool(st.edited)
+            and st.last_tests_ok is False and st.snapshot_paths is not None and is_action(user_text))
+
+
+def _retry_hint(st: "RunState") -> str:
+    files = ", ".join(sorted(e for e in st.edited if not e.startswith("replace_in_files:"))[:4]) or "algunos archivos"
+    return (f"[Intento anterior fallido] Editaste {files}, pero los tests siguieron fallando con: {st.last_failure or '(sin detalle)'}. "
+            "Esos cambios se deshicieron. Prueba un enfoque DISTINTO: considera otra causa (otro archivo o función), "
+            "y mira el código con read_file o symbol_context antes de editar.")
+
+
 _active_runs = 0
 _active_lock = threading.Lock()
 
@@ -489,7 +608,7 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
     """Bucle de pasos. Emite eventos y devuelve (respuesta final, pasos)."""
     final = ""
     step = 0
-    nudges = {"act": 0, "repair": 0, "empty": 0}
+    nudges = {"act": 0, "repair": 0, "empty": 0, "force": 0}
     seen: dict[str, int] = {}
     budget = int(st.eff.num_ctx * 3.2 * 0.7)
 
@@ -507,6 +626,13 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
 
         calls = _extract_calls(message)
         content = (message.get("content") or "").strip()
+        if (not calls and depth == 0 and not st.plan and st.approval != "readonly" and is_action(user_text)
+                and not st.edited and nudges["act"] >= 2 and nudges["force"] < 1 and step < limit):
+            nudges["force"] += 1
+            calls = _forced_calls(st, convo, specs, content)
+            if calls:
+                message = {"tool_calls": [{"function": {"name": c["name"], "arguments": c["args"]}} for c in calls]}
+                yield _tag({"type": "text", "content": "El modelo describió el cambio sin aplicarlo; le pido la herramienta en formato estructurado…"}, tag)
         if not calls:
             if not content and nudges["empty"] < 1 and step < limit:
                 nudges["empty"] += 1
@@ -537,6 +663,9 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
             if depth == 0 and not st.plan:
                 if st.tests_fresh and st.last_tests_ok is False:
                     content = "⚠ Los tests siguen fallando.\n\n" + content
+                elif st.rolled_back and not st.edited:
+                    content = (f"⚠ Probé {st.rolled_back + 1} enfoques y ninguno logró que los tests pasen; "
+                               "dejé el proyecto como estaba.\n\n") + content
                 elif is_action(user_text) and not st.edited and st.approval != "readonly":
                     content = "⚠ No modifiqué ningún archivo.\n\n" + content
             final = content
@@ -684,6 +813,8 @@ def _execute(st: RunState, specs: list[dict], name: str, args: dict, tag: Option
             yield result(False, msg)
             return {"ok": False, "output": msg}
 
+    if mutating and name != "run_tests" and st.snapshot_paths is None:
+        _take_snapshot(st)
     try:
         if network:
             outcome = _run_web(name, args)
@@ -711,8 +842,9 @@ def _execute(st: RunState, specs: list[dict], name: str, args: dict, tag: Option
         elif name == "run_tests":
             st.tests_fresh = True
             st.last_tests_ok = outcome.ok
-            if not outcome.ok and not st.first_failure:
-                st.first_failure = " ".join(outcome.output.split())[:300]
+            if not outcome.ok:
+                st.last_failure = " ".join(outcome.output.split())[:300]
+                st.first_failure = st.first_failure or st.last_failure
     yield result(outcome.ok, outcome.output)
     return {"ok": outcome.ok, "output": outcome.output}
 

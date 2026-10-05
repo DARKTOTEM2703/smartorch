@@ -37,6 +37,7 @@ class AgentFeatureTests(unittest.TestCase):
         audit_dir = tempfile.mkdtemp(prefix="so-feat-audit-")
         for p in (mock.patch.object(datadir, "DATA_DIR", audit_dir),
                   mock.patch.object(loop, "APPROVAL_TIMEOUT", 5),
+                  mock.patch.object(loop, "_chat_json", return_value=""),  # los tests nunca llaman a Ollama
                   mock.patch.object(loop.analysis, "get_profile", side_effect=RuntimeError("sin analisis"))):
             p.start()
             self.addCleanup(p.stop)
@@ -235,9 +236,52 @@ class AgentFeatureTests(unittest.TestCase):
         script = [call("edit_file", path="calc.py", old_text="a * b", new_text="a - b")]
         script += [final(f"intento {i}") for i in range(8)]   # el modelo no logra arreglarlo
         events, _ = self.play(script, answers=[True] * 12, effort="maximo", user="arregla el bug de calc.py")
-        self.assertLessEqual(self.of(events, "done")[0]["steps"], 18)
+        self.assertLessEqual(self.of(events, "done")[0]["steps"], 54)  # 3 intentos de hasta 18 pasos
         final_text = self.of(events, "final")[-1]["content"]
-        self.assertTrue(final_text.startswith("⚠ Los tests siguen fallando."))
+        # ningun intento lo arreglo: se avisa con honestidad y el proyecto queda como estaba, no a medias
+        self.assertTrue(final_text.startswith("⚠ Probé 2 enfoques"), final_text)
+        self.assertIn("a * b", Path(self.root, "calc.py").read_text(encoding="utf-8"))
+
+    def test_with_a_single_candidate_failed_edits_stay_and_are_reported(self):
+        import dataclasses
+        from smartorch.core import effort as effort_mod
+        one = dataclasses.replace(effort_mod.EFFORTS["maximo"], candidates=1)
+        self._project_with_failing_tests()
+        with mock.patch.dict(effort_mod.EFFORTS, {"maximo": one}):
+            events, _ = self.play([call("edit_file", path="calc.py", old_text="a * b", new_text="a - b")] +
+                                  [final(f"intento {i}") for i in range(8)],
+                                  answers=[True] * 12, effort="maximo", user="arregla el bug de calc.py")
+        self.assertTrue(self.of(events, "final")[-1]["content"].startswith("⚠ Los tests siguen fallando."))
+        self.assertEqual(self.of(events, "candidate"), [])
+
+    def test_a_failed_attempt_is_undone_and_a_different_approach_can_succeed(self):
+        self._project_with_failing_tests()
+        events, fake = self.play([
+            call("edit_file", path="calc.py", old_text="a * b", new_text="a - b"),   # intento 1: equivocado
+            final("hecho"), final("sigo"), final("no puedo"),                        # los tests fallan y se agotan las reparaciones
+            call("edit_file", path="calc.py", old_text="a * b", new_text="a / b"),   # intento 2: sobre el original restaurado
+            final("arreglado"),
+        ], answers=[True] * 12, effort="maximo", user="arregla el bug de calc.py")
+        cand = self.of(events, "candidate")
+        self.assertEqual([(c["attempt"], c["of"]) for c in cand], [(2, 3)])
+        self.assertEqual(cand[0]["restored"], 1)
+        self.assertEqual(Path(self.root, "calc.py").read_text(encoding="utf-8"), "def divide(a, b):\n    return a / b\n")
+        self.assertEqual(self.of(events, "final")[-1]["content"], "arreglado")
+        retry_prompt = next(m["content"] for m in reversed(fake.received[4]) if m["role"] == "user")
+        self.assertIn("[Intento anterior fallido]", retry_prompt)
+        self.assertIn("DISTINTO", retry_prompt)
+        self.assertTrue(self.of(events, "done")[0]["learned"])
+
+    def test_rollback_also_removes_files_created_by_the_failed_attempt(self):
+        self._project_with_failing_tests()
+        events, _ = self.play([
+            call("write_file", path="extra.py", content="X = 1\n"),
+            call("edit_file", path="calc.py", old_text="a * b", new_text="a - b"),
+            final("hecho"), final("sigo"), final("no puedo"),
+            final("rendido"), final("rendido"), final("rendido"), final("rendido"),
+        ], answers=[True] * 14, effort="maximo", user="arregla el bug de calc.py")
+        self.assertFalse(Path(self.root, "extra.py").exists())
+        self.assertEqual(Path(self.root, "calc.py").read_text(encoding="utf-8"), "def divide(a, b):\n    return a * b\n")
 
     def test_verified_task_is_learned_with_the_failure_that_preceded_it(self):
         from smartorch.core import experience

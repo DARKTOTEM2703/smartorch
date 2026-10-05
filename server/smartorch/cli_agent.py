@@ -135,6 +135,8 @@ def run_agent(task: str, *, plan: bool = False, effort: str = "normal", approval
                 print(f"    {'☑' if t['done'] else '☐'} {t['text']}")
         elif kind == "compact":
             print(_c(C.DIM, f"{indent}(contexto compactado)"))
+        elif kind == "candidate":
+            print(_c(C.YELLOW, f"{indent}↺ tests fallando: deshice los cambios y pruebo otro enfoque (intento {ev['attempt']}/{ev['of']})"))
         elif kind == "final" and not ev.get("agent"):
             result["final"] = ev["content"]
             result["plan"] = bool(ev.get("plan"))

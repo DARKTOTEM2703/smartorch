@@ -39,6 +39,7 @@ class AgentLoopTests(unittest.TestCase):
         audit_dir = tempfile.mkdtemp(prefix="so-audit-")
         for p in (mock.patch.object(datadir, "DATA_DIR", audit_dir),
                   mock.patch.object(loop, "APPROVAL_TIMEOUT", 5),
+                  mock.patch.object(loop, "_chat_json", return_value=""),  # los tests nunca llaman a Ollama
                   mock.patch.object(loop.analysis, "get_profile", side_effect=RuntimeError("sin analisis"))):
             p.start()
             self.addCleanup(p.stop)
@@ -241,6 +242,32 @@ class AgentLoopTests(unittest.TestCase):
         text = self.read_app()
         self.assertTrue(text.startswith("def hola():") and text.rstrip().endswith("return 'adios'"))
         self.assertIn("Sintaxis válida", [e for e in events if e["type"] == "tool_result"][-1]["output"])
+
+    def test_narrating_model_is_forced_into_a_structured_tool_call(self):
+        reply = '{"tool": "edit_file", "arguments": {"path": "app.py", "old_text": "", "new_text": "def adios():\\n    return 1"}}'
+        with mock.patch.object(loop, "_chat_json", return_value=reply) as forced:
+            events, fake = self.play([final("voy a agregarla"), final("claro, ya casi"), final("lo haré"), final("listo")],
+                                     answers=[True], user="agrega una función adios a app.py")
+        forced.assert_called_once()
+        call_ev = next(e for e in events if e["type"] == "tool_call")
+        self.assertEqual(call_ev["name"], "append_file")  # edit_file sin old_text se convierte en agregar
+        self.assertIn("def adios()", self.read_app())
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"], ["listo"])
+        # la llamada forzada queda en la conversacion como una herramienta mas
+        self.assertTrue(any(m.get("tool_calls") for m in fake.received[-1] if m["role"] == "assistant"))
+
+    def test_forced_call_with_invalid_json_or_missing_args_falls_back_to_the_honest_warning(self):
+        for bad in ("esto no es json", '{"tool": "borrar_todo", "arguments": {}}',
+                    '{"tool": "append_file", "arguments": {"path": "app.py"}}'):
+            with mock.patch.object(loop, "_chat_json", return_value=bad):
+                events, _ = self.play([final("a"), final("b"), final("c")], user="agrega una función adios a app.py")
+            self.assertTrue([e["content"] for e in events if e["type"] == "final"][0].startswith("⚠ No modifiqué ningún archivo."), bad)
+            self.assertNotIn("adios", self.read_app())
+
+    def test_forcing_is_not_used_for_questions_plan_or_readonly(self):
+        with mock.patch.object(loop, "_chat_json", side_effect=AssertionError("no debia forzar")):
+            self.play([final("hace hola")], user="explica app.py")
+            self.play([final("a"), final("b"), final("c")], mode="readonly", user="agrega una función")
 
     def test_tool_log_summarises_actions(self):
         events, _ = self.play([call("read_file", path="app.py"), final()])

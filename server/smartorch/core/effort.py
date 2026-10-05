@@ -38,6 +38,7 @@ class Effort:
     explore: bool                        # subagente explorador disponible
     plan_first: bool                     # pedir un plan (todo_write) antes de actuar
     chat: ChatKnobs = field(default_factory=ChatKnobs)
+    candidates: int = 1                  # intentos completos: si los tests siguen fallando se deshace y se prueba otro enfoque
 
 
 EFFORTS: dict[str, Effort] = {
@@ -57,7 +58,7 @@ EFFORTS: dict[str, Effort] = {
     "maximo": Effort(
         name="maximo", label="Máximo", description="Planifica, investiga, verifica con tests y reintenta. Más lento, más fiable.",
         max_steps=18, num_ctx=14336, num_predict=1536, syntax_check=True, run_tests=True, repair_attempts=3,
-        explore=True, plan_first=True,
+        explore=True, plan_first=True, candidates=3,
         chat=ChatKnobs(thinking=True, ensemble=True, speculative=False, decompose=True,
                        rag_top_k=8, rag_chars=6000, max_tokens=3072),
     ),

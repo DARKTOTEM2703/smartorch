@@ -353,6 +353,7 @@ function agentEvent(ev, ctx) {
   }
   else if (ev.type === "ask") ctx.logBox.append(askCard(ev));
   else if (ev.type === "compact") target.append(el("div", "agent-note", "Contexto compactado para ahorrar memoria."));
+  else if (ev.type === "candidate") target.append(el("div", "agent-note", "↺ Los tests siguen fallando: deshice los cambios y pruebo otro enfoque (intento " + ev.attempt + " de " + ev.of + ")."));
   else if (ev.type === "tool_call") {
     if (HIDDEN_TOOLS.has(ev.name)) cards.set(ev.id, null);
     else {
