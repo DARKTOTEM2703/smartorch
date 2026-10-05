@@ -39,11 +39,14 @@ class WorkspaceWatcher:
     def _scan(self) -> dict[str, float]:
         """Toma snapshot de mtimes de todos los archivos relevantes."""
         snapshot = {}
+        own_index = os.path.abspath(INDEX_FILE)
         for dirpath, dirnames, filenames in os.walk(self.root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith('.')]
             for fname in filenames:
                 if os.path.splitext(fname)[1].lower() in WATCH_EXTENSIONS:
                     fpath = os.path.join(dirpath, fname)
+                    if os.path.abspath(fpath) == own_index:
+                        continue  # el indice propio no debe disparar reindexados
                     try:
                         snapshot[fpath] = os.stat(fpath).st_mtime
                     except OSError:
@@ -130,7 +133,12 @@ def detect_vscode_workspace() -> str | None:
 
     # 2. Buscar en directorios comunes de proyectos
     candidates = []
-    for base in ["E:\\", "Z:\\", "D:\\", os.path.expanduser("~\\Documents")]:
+    home = os.path.expanduser("~")
+    bases = [os.getcwd(), os.path.dirname(os.getcwd())]
+    bases += [os.path.join(home, d) for d in ("Documents", "projects", "dev", "code", "src", "repos")]
+    if os.name == "nt":
+        bases += [f"{letter}:\\" for letter in "CDEFGHZ"]
+    for base in dict.fromkeys(bases):
         if not os.path.isdir(base):
             continue
         for entry in os.scandir(base):
