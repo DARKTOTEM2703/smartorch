@@ -1,55 +1,9 @@
 /**
- * Vistas nativas de SmartOrch en la barra lateral:
- *   - Historial: las conversaciones compartidas entre la web, la terminal y VS Code.
+ * Vista nativa de SmartOrch en la barra lateral (el historial vive en el boton del reloj del panel de chat):
  *   - Proyecto: el analisis del workspace (lenguajes, puntos de entrada, modulos y sus simbolos).
  */
 import * as vscode from "vscode";
 import { apiFetch } from "./bridge";
-
-// ── Historial ───────────────────────────────────────────────────────────────
-
-interface ConversationInfo {
-  id: string;
-  title: string;
-  source: string;
-  message_count: number;
-  updated_at: number;
-}
-
-class ConversationItem extends vscode.TreeItem {
-  constructor(readonly info: ConversationInfo) {
-    super(info.title, vscode.TreeItemCollapsibleState.None);
-    this.description = `${info.source} · ${info.message_count}`;
-    this.tooltip = `${info.title}\nIniciada en ${info.source} · ${info.message_count} mensajes\n${new Date(info.updated_at * 1000).toLocaleString()}`;
-    this.contextValue = "conversation";
-    this.iconPath = new vscode.ThemeIcon(
-      info.source === "cli" ? "terminal" : info.source === "web" ? "globe" : "comment-discussion",
-    );
-    this.command = { command: "smartorch.openConversation", title: "Abrir", arguments: [info.id] };
-  }
-}
-
-export class ConversationsProvider implements vscode.TreeDataProvider<ConversationItem> {
-  private readonly changed = new vscode.EventEmitter<void>();
-  readonly onDidChangeTreeData = this.changed.event;
-
-  refresh() {
-    this.changed.fire();
-  }
-
-  getTreeItem(item: ConversationItem) {
-    return item;
-  }
-
-  async getChildren(): Promise<ConversationItem[]> {
-    try {
-      const data: any = await (await apiFetch("/smartorch/conversations?limit=60")).json();
-      return (data.conversations as ConversationInfo[]).map((c) => new ConversationItem(c));
-    } catch {
-      return []; // servidor apagado: la vista muestra su mensaje de bienvenida
-    }
-  }
-}
 
 // ── Proyecto ────────────────────────────────────────────────────────────────
 
@@ -283,34 +237,13 @@ async function analyzeProject() {
 }
 
 export function registerTrees(context: vscode.ExtensionContext) {
-  const conversations = new ConversationsProvider();
   const project = new ProjectProvider();
 
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider("smartorch.conversationsView", conversations),
-    vscode.window.registerTreeDataProvider("smartorch.projectView", project),
-    vscode.commands.registerCommand("smartorch.refreshViews", () => {
-      conversations.refresh();
-      project.refresh();
-    }),
+    vscode.window.registerTreeDataProvider("smartorch.projectTree", project),
+    vscode.commands.registerCommand("smartorch.refreshViews", () => project.refresh()),
     vscode.commands.registerCommand("smartorch.analyzeProject", analyzeProject),
     vscode.commands.registerCommand("smartorch.buildMap", buildMap),
     vscode.commands.registerCommand("smartorch.forgetExperiences", manageExperiences),
-    vscode.commands.registerCommand("smartorch.renameConversation", async (item: ConversationItem) => {
-      const title = await vscode.window.showInputBox({ prompt: "Nuevo título", value: item.info.title });
-      if (!title?.trim()) return;
-      await apiFetch(`/smartorch/conversations/${item.info.id}`, { method: "PATCH", body: JSON.stringify({ title }) });
-      conversations.refresh();
-    }),
-    vscode.commands.registerCommand("smartorch.deleteConversation", async (item: ConversationItem) => {
-      const ok = await vscode.window.showWarningMessage(`¿Eliminar «${item.info.title}»?`, { modal: true }, "Eliminar");
-      if (ok !== "Eliminar") return;
-      await apiFetch(`/smartorch/conversations/${item.info.id}`, { method: "DELETE" });
-      conversations.refresh();
-    }),
   );
-
-  // el historial se actualiza solo: lo que hables en la web o la terminal aparece aqui
-  const timer = setInterval(() => conversations.refresh(), 15000);
-  context.subscriptions.push({ dispose: () => clearInterval(timer) });
 }

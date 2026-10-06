@@ -40,25 +40,60 @@ function selectionOrFile(): { code: string; language: string; file: string } | u
   };
 }
 
-/** Historial como selector nativo (icono del reloj en el titulo del panel), igual que en otros agentes. */
+/** Historial como selector nativo (icono del reloj en el titulo del panel). Cada fila permite renombrar y borrar. */
 async function pickConversation(panel: ChatPanel) {
-  try {
+  type Item = vscode.QuickPickItem & { id: string; buttons: vscode.QuickInputButton[] };
+  const rename: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon("edit"), tooltip: "Renombrar" };
+  const remove: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon("trash"), tooltip: "Eliminar" };
+  const load = async (): Promise<Item[]> => {
     const data: any = await (await apiFetch("/smartorch/conversations?limit=100")).json();
-    const items = (data.conversations as any[]).map((c) => ({
+    return (data.conversations as any[]).map((c) => ({
       label: c.title,
       description: `${c.source} · ${c.message_count} mensajes`,
       detail: new Date(c.updated_at * 1000).toLocaleString(),
       id: c.id as string,
+      buttons: [rename, remove],
     }));
-    if (!items.length) {
-      void vscode.window.showInformationMessage("SmartOrch: aún no hay conversaciones.");
-      return;
-    }
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Conversaciones de SmartOrch (compartidas con la terminal y la web)", matchOnDetail: true });
-    if (picked) await panel.openConversation(picked.id);
+  };
+  let items: Item[];
+  try {
+    items = await load();
   } catch {
     void vscode.window.showWarningMessage("SmartOrch: no pude leer el historial. ¿Está corriendo el servidor?");
+    return;
   }
+  if (!items.length) {
+    void vscode.window.showInformationMessage("SmartOrch: aún no hay conversaciones.");
+    return;
+  }
+  const qp = vscode.window.createQuickPick<Item>();
+  qp.placeholder = "Conversaciones de SmartOrch (compartidas con la terminal y la web)";
+  qp.matchOnDetail = true;
+  qp.items = items;
+  qp.onDidAccept(() => {
+    const picked = qp.selectedItems[0];
+    qp.hide();
+    if (picked) void panel.openConversation(picked.id);
+  });
+  qp.onDidTriggerItemButton(async (e) => {
+    const item = e.item;
+    try {
+      if (e.button === rename) {
+        const title = await vscode.window.showInputBox({ prompt: "Nuevo título", value: item.label });
+        if (!title?.trim()) return;
+        await apiFetch(`/smartorch/conversations/${item.id}`, { method: "PATCH", body: JSON.stringify({ title }) });
+      } else {
+        const ok = await vscode.window.showWarningMessage(`¿Eliminar «${item.label}»?`, { modal: true }, "Eliminar");
+        if (ok !== "Eliminar") return;
+        await apiFetch(`/smartorch/conversations/${item.id}`, { method: "DELETE" });
+      }
+      qp.items = await load();
+    } catch {
+      void vscode.window.showWarningMessage("SmartOrch: no pude completar la acción.");
+    }
+  });
+  qp.onDidHide(() => qp.dispose());
+  qp.show();
 }
 
 /** VS Code no expone un comando para mover una vista por nombre: se abre su selector y se explica el paso. */

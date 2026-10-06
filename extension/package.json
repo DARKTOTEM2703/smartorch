@@ -61,12 +61,9 @@
           "name": "Chat"
         },
         {
-          "id": "smartorch.conversationsView",
-          "name": "Historial"
-        },
-        {
-          "id": "smartorch.projectView",
-          "name": "Proyecto"
+          "id": "smartorch.projectTree",
+          "name": "Proyecto",
+          "visibility": "collapsed"
         }
       ]
     },
@@ -204,18 +201,6 @@
         "icon": "$(refresh)"
       },
       {
-        "command": "smartorch.renameConversation",
-        "title": "Renombrar conversación",
-        "category": "SmartOrch",
-        "icon": "$(edit)"
-      },
-      {
-        "command": "smartorch.deleteConversation",
-        "title": "Eliminar conversación",
-        "category": "SmartOrch",
-        "icon": "$(trash)"
-      },
-      {
         "command": "smartorch.buildMap",
         "title": "SmartOrch: Construir mapa del proyecto",
         "icon": "$(book)"
@@ -330,17 +315,17 @@
       "view/title": [
         {
           "command": "smartorch.refreshViews",
-          "when": "view == smartorch.conversationsView || view == smartorch.projectView",
+          "when": "view == smartorch.projectTree",
           "group": "navigation"
         },
         {
           "command": "smartorch.analyzeProject",
-          "when": "view == smartorch.projectView",
+          "when": "view == smartorch.projectTree",
           "group": "navigation"
         },
         {
           "command": "smartorch.buildMap",
-          "when": "view == smartorch.projectView",
+          "when": "view == smartorch.projectTree",
           "group": "navigation"
         },
         {
@@ -357,28 +342,6 @@
           "command": "smartorch.moveChat",
           "when": "view == smartorch.chatView",
           "group": "9_move"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "smartorch.renameConversation",
-          "when": "view == smartorch.conversationsView && viewItem == conversation",
-          "group": "inline@1"
-        },
-        {
-          "command": "smartorch.deleteConversation",
-          "when": "view == smartorch.conversationsView && viewItem == conversation",
-          "group": "inline@2"
-        }
-      ],
-      "commandPalette": [
-        {
-          "command": "smartorch.renameConversation",
-          "when": "false"
-        },
-        {
-          "command": "smartorch.deleteConversation",
-          "when": "false"
         }
       ]
     },
@@ -460,11 +423,7 @@
     },
     "viewsWelcome": [
       {
-        "view": "smartorch.conversationsView",
-        "contents": "Aún no hay conversaciones, o el servidor está apagado.\n[Iniciar servidor](command:smartorch.startServer)"
-      },
-      {
-        "view": "smartorch.projectView",
+        "view": "smartorch.projectTree",
         "contents": "Abre una carpeta y deja que SmartOrch la analice.\n[Analizar proyecto](command:smartorch.analyzeProject)"
       }
     ]
