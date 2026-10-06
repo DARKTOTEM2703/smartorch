@@ -14,3 +14,4 @@ chroma_db/
 
 # resultados locales del banco de pruebas
 server/evals/results/
+server/smartorch/ui/static/_*
