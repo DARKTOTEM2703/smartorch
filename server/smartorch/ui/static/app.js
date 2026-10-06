@@ -676,6 +676,15 @@ async function init() {
   setEffort(loadPref("effort", "normal"));
   setMode(loadPref("mode", NATIVE ? "agent" : "ask"));
   $("menuBtn").onclick = () => $("sidebar").classList.toggle("open");
+  // el panel de conversaciones (modo estrecho) se cierra con un clic fuera, con Escape o al empezar un chat
+  document.addEventListener("click", (e) => {
+    const sb = $("sidebar");
+    if (!sb.classList.contains("open") || sb.contains(e.target) || $("menuBtn").contains(e.target)) return;
+    sb.classList.remove("open");
+    e.preventDefault(); e.stopPropagation();  // ese clic solo cierra el panel, no activa lo que hubiera debajo
+  }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("sidebar").classList.remove("open"); });
+  $("newChat").addEventListener("click", () => $("sidebar").classList.remove("open"));
   $("themeBtn").onclick = () => {
     const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
     const next = cur === "dark" ? "light" : "dark"; applyTheme(next);
