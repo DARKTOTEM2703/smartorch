@@ -709,13 +709,14 @@ async function init() {
     document.body.classList.add("embed");
     $("ctxLabel").hidden = false;
     $("vscodeBtn").style.display = "none";
-    if (NATIVE) $("themeBtn").style.display = "none";
+    if (NATIVE) { $("themeBtn").style.display = "none"; document.body.classList.add("native"); }
     addEventListener("message", (e) => {
       if ((!NATIVE && e.source !== parent) || !e.data) return;
       const m = e.data;
       if (m.type === "dialogResult") { const r = dialogs.get(m.id); dialogs.delete(m.id); if (r) r(m.value); return; }
       if (m.type === "context" && host.pending) { const r = host.pending; host.pending = null; r(m); }
       else if (m.type === "prompt" && typeof m.text === "string") { newChat(); if (m.send) send(m.text); else { $("input").value = m.text; autosize(); $("input").focus(); } }
+      else if (m.type === "newChat") newChat();
       else if (m.type === "open" && typeof m.conv === "string") openConversation(m.conv).catch(() => toast("No encontré esa conversación"));
     });
   }

@@ -396,6 +396,12 @@ export class ChatPanel implements vscode.WebviewViewProvider {
     this.target()?.post({ type: "prompt", text, send: autoSend });
   }
 
+  /** Conversacion nueva (boton + del titulo del panel). */
+  async newChat() {
+    if (!this.tab) await vscode.commands.executeCommand("workbench.view.extension.smartorch");
+    this.target()?.post({ type: "newChat" });
+  }
+
   async openConversation(id: string) {
     if (!this.tab) await vscode.commands.executeCommand("workbench.view.extension.smartorch");
     this.target()?.post({ type: "open", conv: id });

@@ -337,6 +337,14 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("Ahora haz esto", second_prompt)
         self.assertEqual([e["content"] for e in events if e["type"] == "final"][-1], "segunda parte")
 
+    def test_model_error_in_the_first_part_does_not_continue_with_the_next_parts(self):
+        with mock.patch.object(loop, "_chat", side_effect=ConnectionError("Ollama no disponible")) as chat:
+            events = list(loop.run([{"role": "user", "content": "agrega la función adios a app.py, y un test para ella"}], self.root))
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual([e["type"] for e in events].count("error"), 1)
+        self.assertFalse(any("Paso 2" in e.get("content", "") for e in events if e["type"] == "text"))
+        self.assertEqual(events[-1]["type"], "done")
+
     def test_tool_log_summarises_actions(self):
         events, _ = self.play([call("read_file", path="app.py"), final()])
         self.assertEqual(events[-1]["type"], "done")

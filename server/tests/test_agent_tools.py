@@ -284,6 +284,16 @@ class AppendGuardTests(unittest.TestCase):
         self.assertIn("append_file", str(ctx.exception))
         self.assertTrue(tools.add_to_class(self.sb, "t.py", "T", "@staticmethod\ndef util(a):\n    return a").ok)
 
+    def test_add_to_class_with_a_missing_class_appends_plain_functions_to_the_module(self):
+        out = tools.add_to_class(self.sb, "t.py", "Calc", "def power(a, b):\n    return a ** b")
+        self.assertTrue(out.ok)
+        self.assertIn("no hay una clase «Calc»", out.output)
+        text = __import__("pathlib").Path(self.root, "t.py").read_text(encoding="utf-8")
+        self.assertTrue(text.rstrip().endswith("return a ** b"))
+        compile(text, "t.py", "exec")
+        with self.assertRaises(SandboxError):  # un metodo con self si necesita su clase
+            tools.add_to_class(self.sb, "t.py", "Calc", "def total(self):\n    return 1")
+
     def test_add_to_class_is_a_mutating_tool_with_preview(self):
         self.assertTrue(tools.is_mutating("add_to_class"))
         args = {"path": "t.py", "class_name": "T", "content": "def test_d(self):\n    pass"}

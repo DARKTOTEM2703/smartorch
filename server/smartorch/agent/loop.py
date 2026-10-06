@@ -144,6 +144,7 @@ class RunState:
     snapshot: dict = field(default_factory=dict)
     snapshot_paths: Optional[set] = None
     rolled_back: int = 0
+    errored: bool = False
     preloaded: set = field(default_factory=set)
     last_tests_ok: Optional[bool] = None
     repairs: int = 0
@@ -643,13 +644,15 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
         parts = split_request(user_text) if (is_action(user_text) and not plan) else [user_text]
         final, steps = yield from _loop(convo, st, specs, parts[0], limit, tag=None, depth=0)
         for n, part in enumerate(parts[1:], start=2):
+            if st.errored:
+                break
             # un 8B hace la primera mitad de «agrega X y un test» y da todo por terminado: se le da una parte por vez
             yield {"type": "text", "content": f"Paso {n} de {len(parts)}: {part}"}
             convo.append({"role": "user", "content": f"Ya está lo anterior. Ahora haz esto, con herramientas: {part}"})
             final, more = yield from _loop(convo, st, specs, part, limit, tag=None, depth=0)
             steps += more
         attempt = 1
-        while _wants_retry(st, user_text, attempt):
+        while not st.errored and _wants_retry(st, user_text, attempt):
             attempt += 1
             hint = _retry_hint(st)
             restored = _rollback(st)
@@ -782,6 +785,7 @@ def _loop(convo: list[dict], st: RunState, specs: list[dict], user_text: str, li
         try:
             message = _chat(st.model, convo, specs, st.eff)
         except ConnectionError as e:
+            st.errored = True  # run() no sigue con otras partes de la peticion si el modelo no responde
             yield {"type": "error", "message": str(e)}
             return final, step
 

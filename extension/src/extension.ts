@@ -8,6 +8,7 @@ import { CompletionProvider } from "./completion";
 import { activateSmartOrch } from "./core";
 import { ChatPanel, registerProposedProvider } from "./panel";
 import { startSmartOrchServer } from "./runtime";
+import { apiFetch } from "./bridge";
 import { registerTrees } from "./trees";
 
 // Comandos de editor: clic derecho / paleta / atajos. Cada uno envia el codigo al chat.
@@ -39,6 +40,34 @@ function selectionOrFile(): { code: string; language: string; file: string } | u
   };
 }
 
+/** Historial como selector nativo (icono del reloj en el titulo del panel), igual que en otros agentes. */
+async function pickConversation(panel: ChatPanel) {
+  try {
+    const data: any = await (await apiFetch("/smartorch/conversations?limit=100")).json();
+    const items = (data.conversations as any[]).map((c) => ({
+      label: c.title,
+      description: `${c.source} · ${c.message_count} mensajes`,
+      detail: new Date(c.updated_at * 1000).toLocaleString(),
+      id: c.id as string,
+    }));
+    if (!items.length) {
+      void vscode.window.showInformationMessage("SmartOrch: aún no hay conversaciones.");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: "Conversaciones de SmartOrch (compartidas con la terminal y la web)", matchOnDetail: true });
+    if (picked) await panel.openConversation(picked.id);
+  } catch {
+    void vscode.window.showWarningMessage("SmartOrch: no pude leer el historial. ¿Está corriendo el servidor?");
+  }
+}
+
+/** VS Code no expone un comando para mover una vista por nombre: se abre su selector y se explica el paso. */
+async function moveChatToSecondarySideBar() {
+  void vscode.window.showInformationMessage(
+    "En el selector que se abre elige «SmartOrch: Chat» y luego «Secondary Side Bar» (barra lateral derecha). También puedes arrastrar el icono de SmartOrch hacia la derecha.");
+  await vscode.commands.executeCommand("workbench.action.moveView");
+}
+
 export function activate(context: vscode.ExtensionContext) {
   const panel = new ChatPanel(context);
   registerProposedProvider(context);
@@ -54,6 +83,9 @@ export function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand("smartorch.openChatTab", () => panel.openTab()),
     vscode.commands.registerCommand("smartorch.openConversation", (id: string) => panel.openConversation(id)),
+    vscode.commands.registerCommand("smartorch.newChat", () => panel.newChat()),
+    vscode.commands.registerCommand("smartorch.chatHistory", () => pickConversation(panel)),
+    vscode.commands.registerCommand("smartorch.moveChat", moveChatToSecondarySideBar),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("smartorch.apiUrl")) panel.refresh();
     }),

@@ -425,6 +425,21 @@ def append_file(sb: Sandbox, path: str, content: str) -> ToolOutcome:
     return ToolOutcome(True, f"Agregado al final de {sb.rel(p)}")
 
 
+class _NoSuchClass(SandboxError):
+    """La clase pedida no existe en el archivo."""
+
+
+def _only_plain_functions(content: str) -> bool:
+    """True si el codigo son funciones de modulo (ninguna recibe self/cls): su sitio es el final del archivo, no una clase."""
+    try:
+        body = ast.parse(textwrap.dedent(content).strip("\n")).body
+    except SyntaxError:
+        return False
+    fns = [n for n in body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return bool(fns) and len(fns) == len(body) and all(
+        not (f.args.args and f.args.args[0].arg in ("self", "cls")) for f in fns)
+
+
 def _into_class(sb: Sandbox, path: str, class_name: str, content: str) -> tuple[Path, str, str]:
     """Inserta `content` al final del cuerpo de una clase Python (AST), con la sangria correcta."""
     p = sb.resolve(path)
@@ -441,7 +456,7 @@ def _into_class(sb: Sandbox, path: str, class_name: str, content: str) -> tuple[
     classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name.strip()]
     if not classes:
         known = ", ".join(n.name for n in ast.walk(tree) if isinstance(n, ast.ClassDef)) or "ninguna"
-        raise SandboxError(f"No hay una clase «{class_name}» en {path}. Clases que sí hay: {known}.")
+        raise _NoSuchClass(f"No hay una clase «{class_name}» en {path}. Clases que sí hay: {known}.")
     cls = classes[0]
     existing = {n.name for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
     clash = sorted(existing & set(_DEF.findall(content)))
@@ -475,7 +490,14 @@ def preview_add_to_class(sb: Sandbox, path: str, class_name: str, content: str) 
 
 def add_to_class(sb: Sandbox, path: str, class_name: str, content: str) -> ToolOutcome:
     """Agrega un metodo (p. ej. un test de unittest) dentro de una clase existente, sin old_text."""
-    p, _, updated = _into_class(sb, path, class_name, content)
+    try:
+        p, _, updated = _into_class(sb, path, class_name, content)
+    except _NoSuchClass:
+        if not _only_plain_functions(content):
+            raise
+        # pidio una clase que no existe pero el codigo son funciones de modulo: es agregar al final del archivo
+        out = append_file(sb, path, content)
+        return ToolOutcome(out.ok, f"{out.output} (no hay una clase «{class_name}»: se agregó como función del módulo)")
     p.write_text(updated, encoding="utf-8", newline="")
     return ToolOutcome(True, f"Agregado a la clase {class_name} en {sb.rel(p)}")
 

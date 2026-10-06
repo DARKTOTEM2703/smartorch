@@ -223,6 +223,20 @@
       {
         "command": "smartorch.forgetExperiences",
         "title": "SmartOrch: Gestionar lo aprendido del proyecto"
+      },
+      {
+        "command": "smartorch.newChat",
+        "title": "SmartOrch: Nueva conversación",
+        "icon": "$(add)"
+      },
+      {
+        "command": "smartorch.chatHistory",
+        "title": "SmartOrch: Historial de conversaciones",
+        "icon": "$(history)"
+      },
+      {
+        "command": "smartorch.moveChat",
+        "title": "SmartOrch: Mover el chat a la barra lateral derecha"
       }
     ],
     "submenus": [
@@ -328,6 +342,21 @@
           "command": "smartorch.buildMap",
           "when": "view == smartorch.projectView",
           "group": "navigation"
+        },
+        {
+          "command": "smartorch.newChat",
+          "when": "view == smartorch.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "smartorch.chatHistory",
+          "when": "view == smartorch.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "smartorch.moveChat",
+          "when": "view == smartorch.chatView",
+          "group": "9_move"
         }
       ],
       "view/item/context": [
