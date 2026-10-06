@@ -132,12 +132,27 @@ def main():
     parser.add_argument("--task", nargs="+", default=[t[0] for t in TASKS])
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--model", default=None, help="modelo del agente (por defecto el configurado)")
+    parser.add_argument("--ablate", nargs="*", default=[], choices=["split", "judge", "add_to_class", "force"],
+                        help="apaga piezas del agente para medir si ayudan o estorban")
     args = parser.parse_args()
 
     # el banco de pruebas no debe escribir experiencias ni grafos en los datos reales del usuario
     import tempfile
     from smartorch.core import datadir
     datadir.DATA_DIR = tempfile.mkdtemp(prefix="so-eval-data-")
+
+    from smartorch.agent import tools as T
+    if "split" in args.ablate:
+        loop.split_request = lambda text: [text]
+    if "judge" in args.ablate or "force" in args.ablate:
+        real = loop._forced_calls
+        loop._forced_calls = lambda st, convo, specs, narration, completion_of=None: (
+            [] if (completion_of is not None and "judge" in args.ablate) or (completion_of is None and "force" in args.ablate)
+            else real(st, convo, specs, narration, completion_of))
+    if "add_to_class" in args.ablate:
+        T.EDIT_TOOLS[:] = [t for t in T.EDIT_TOOLS if t != "add_to_class"]
+    if args.ablate:
+        print("piezas apagadas:", ", ".join(args.ablate), flush=True)
 
     results = []
     for task_id, fixture, prompt, check in TASKS:

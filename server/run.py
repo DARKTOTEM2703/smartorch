@@ -25,6 +25,20 @@ def main():
 
     workspace  = next((a for a in args if not a.startswith("--")), None)
 
+    # ── Una sola instancia: si ya hay un servidor, se reutiliza en vez de arrancar otro ───────
+    from smartorch import singleton
+    existing = singleton.running_server()
+    if existing:
+        print(f"[*] SmartOrch ya está corriendo ({singleton._url('')}); reutilizo ese servidor.")
+        if workspace:
+            root = os.path.abspath(workspace)
+            try:
+                r = singleton.register_workspace(root)
+                print(f"[*] Proyecto registrado en el servidor existente: {root} ({r.get('tfidf_chunks', 0)} fragmentos)")
+            except Exception as e:  # noqa: BLE001
+                print(f"[!] No pude registrar {root} en el servidor existente: {e}")
+        return
+
     # ── Auto-detectar workspace ───────────────────────────────────────────────
     from smartorch.core.watcher import detect_vscode_workspace
     from smartorch.core.indexer import get_index, reindex, INDEX_FILE
