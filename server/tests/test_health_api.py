@@ -42,5 +42,44 @@ class HealthApiTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 403)
 
 
+
+class OllamaProbeTests(unittest.TestCase):
+    def test_probe_reports_running_and_down_without_raising(self):
+        import json
+        import urllib.error
+        import io
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch("urllib.request.urlopen", return_value=Resp(json.dumps({"models": [{}, {}]}).encode())):
+            up = asyncio.run(server.ollama_probe())
+        self.assertEqual((up["running"], up["models"]), (True, 2))
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("WinError 10061")):
+            down = asyncio.run(server.ollama_probe())
+        self.assertEqual((down["running"], down["models"]), (False, 0))
+        self.assertIn("http", down["url"])
+
+    def test_connection_errors_are_short_and_actionable(self):
+        import urllib.error
+        from smartorch.agent import loop
+        from smartorch.core import ollama_client
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("WinError 10061")):
+            with self.assertRaises(ConnectionError) as ctx:
+                loop._chat("m", [], [], loop.effort_mod.get("normal"))
+        msg = str(ctx.exception)
+        self.assertIn("Ollama no disponible", msg)
+        self.assertIn("¿Está corriendo?", msg)
+        self.assertNotIn("10061", msg)
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("x")):
+            with self.assertRaises(ConnectionError) as ctx2:
+                ollama_client.chat_text("m", [{"role": "user", "content": "hola"}])
+        self.assertIn("¿Está corriendo?", str(ctx2.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

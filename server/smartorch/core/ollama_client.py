@@ -58,7 +58,7 @@ def chat(
             "total_duration_ms": round(total_dur_ns / 1e6),
         }
     except urllib.error.URLError as e:
-        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}")
+        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}. ¿Está corriendo?")
 
 
 def chat_text(
@@ -123,7 +123,7 @@ def chat_stream(
                 except json.JSONDecodeError:
                     continue
     except urllib.error.URLError as e:
-        raise ConnectionError(f"Ollama no disponible: {e}")
+        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}. ¿Está corriendo?")
 
 
 def generate(model: str, prompt: str, max_tokens: int = 128, temperature: float = 0.1,
@@ -154,7 +154,7 @@ def generate(model: str, prompt: str, max_tokens: int = 128, temperature: float 
             text = json.loads(resp.read().decode()).get("response", "")
             return text.strip() if strip else text
     except urllib.error.URLError as e:
-        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}")
+        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}. ¿Está corriendo?")
 
 
 def list_models() -> list[str]:

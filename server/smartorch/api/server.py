@@ -678,6 +678,22 @@ async def project_map_cancel(root: Optional[str] = None):
     return {"cancelled": event is not None}
 
 
+@app.get("/smartorch/ollama", dependencies=[Depends(verify_key)])
+async def ollama_probe():
+    """¿Responde Ollama? Barato (2 s de tope) para que las interfaces muestren un aviso con boton de reconectar."""
+    import json as _json
+    import urllib.request
+    from smartorch.config import OLLAMA_URL
+
+    def probe():
+        try:
+            with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=2) as resp:
+                return {"running": True, "url": OLLAMA_URL, "models": len(_json.loads(resp.read().decode()).get("models", []))}
+        except Exception:  # noqa: BLE001 - cualquier fallo significa "no responde"
+            return {"running": False, "url": OLLAMA_URL, "models": 0}
+    return await asyncio.to_thread(probe)
+
+
 @app.get("/smartorch/health", dependencies=[Depends(verify_key)])
 async def project_health(root: Optional[str] = None):
     """Salud del proyecto desde el grafo de codigo: duplicados, funciones largas, clases grandes, ciclos."""

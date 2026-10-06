@@ -106,6 +106,9 @@ textarea{flex:1;resize:none;max-height:200px;border:0;background:none;padding:6p
 .slash-item{display:flex;gap:10px;padding:8px 12px;cursor:pointer;font-size:13.5px}
 .slash-item.sel,.slash-item:hover{background:var(--panel2)}
 .slash-item b{min-width:96px;color:var(--accent)}.slash-item span{color:var(--dim)}
+.offline{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 14px;background:#f0883e22;border-bottom:1px solid #f0883e66;font-size:13px}
+.offline[hidden]{display:none}
+.offline span{flex:1 1 160px}
 .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--panel);border:1px solid var(--border);padding:8px 16px;border-radius:99px;font-size:13.5px;box-shadow:0 8px 24px #0006;z-index:20}
 .only-mobile{display:none}
 .code-btns{display:flex;gap:2px}

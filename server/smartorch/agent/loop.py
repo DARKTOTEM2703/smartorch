@@ -185,7 +185,7 @@ def _chat(model: str, messages: list[dict], specs: list[dict], eff: "effort_mod.
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read().decode())["message"]
     except urllib.error.URLError as e:
-        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}") from e
+        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}. ¿Está corriendo?") from e
 
 
 def _chat_json(model: str, messages: list[dict], schema: dict, eff: "effort_mod.Effort") -> str:
@@ -199,7 +199,7 @@ def _chat_json(model: str, messages: list[dict], schema: dict, eff: "effort_mod.
         with urllib.request.urlopen(req, timeout=300) as resp:
             return json.loads(resp.read().decode())["message"].get("content", "")
     except urllib.error.URLError as e:
-        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}: {e}") from e
+        raise ConnectionError(f"Ollama no disponible en {OLLAMA_URL}. ¿Está corriendo?") from e
 
 
 def _forced_calls(st: "RunState", convo: list[dict], specs: list[dict], narration: str,
@@ -274,7 +274,33 @@ def _extract_calls(message: dict) -> list[dict]:
             except ValueError:
                 continue
     if not calls:
+        calls = _calls_from_json_text(message.get("content") or "")
+    if not calls:
         calls = _calls_from_python_syntax(message.get("content") or "")
+    return calls
+
+
+def _calls_from_json_text(content: str) -> list[dict]:
+    """{"name": ..., "arguments": {...}} escrito como texto (a veces dentro de un bloque ```json). Solo herramientas conocidas."""
+    calls: list[dict] = []
+    decoder = json.JSONDecoder()
+    i = 0
+    while i < len(content) and len(calls) < MAX_CALLS_PER_STEP:
+        start = content.find("{", i)
+        if start < 0:
+            break
+        try:
+            data, end = decoder.raw_decode(content, start)
+        except ValueError:
+            i = start + 1
+            continue
+        i = end
+        if not isinstance(data, dict):
+            continue
+        name = data.get("name") or data.get("tool")
+        args = data.get("arguments", data.get("parameters"))
+        if isinstance(name, str) and (name in T.TOOLS or name in T.EXTRA_SPECS) and isinstance(args, dict):
+            calls.append({"name": name, "args": args})
     return calls
 
 
@@ -412,6 +438,31 @@ def _protects_tests(user_text: str) -> bool:
     """Arreglar un bug no es cambiar los tests: se protegen salvo que se pida escribirlos."""
     t = _plain(user_text).lower()
     return bool(_FIX.search(t)) and not _WRITE_TESTS.search(t)
+
+
+_SPLIT = re.compile(
+    r"\s*(?:,\s*)?\b(?:y|e)\s+(?:tambien\s+|ademas\s+)?(?=(?:un|una|el|los|las|su|sus)\s+(?:\w+\s+){0,2}(?:test|tests|prueba|pruebas|docstring|documentacion)\b)"
+    r"|\s*[.;]\s+(?:luego|despues|ademas|tambien)\b[,\s]*|\s*,?\s*(?:\b(?:y|e)\s+)?\b(?:luego|despues)\b[,\s]+", re.IGNORECASE)
+
+
+def split_request(user_text: str) -> list[str]:
+    """Divide una peticion de dos entregables («agrega X y un test para ella») en sub-tareas ordenadas. Maximo 3."""
+    plain = _plain(user_text)
+    cuts = [m for m in _SPLIT.finditer(plain)]
+    if not cuts or len(user_text) > 600:
+        return [user_text]
+    # _plain solo quita tildes (misma longitud), asi los indices valen para el texto original
+    pieces, last = [], 0
+    for m in cuts[:2]:
+        pieces.append(user_text[last:m.start()].strip(" ,.;"))
+        last = m.end()
+    pieces.append(user_text[last:].strip(" ,.;"))
+    pieces = [p for p in pieces if len(p) > 3]
+    if len(pieces) < 2:
+        return [user_text]
+    # los fragmentos posteriores heredan el contexto de la peticion: «un test para ella» solo se entiende con lo primero
+    head = pieces[0]
+    return [head] + [f"{p[0].upper()}{p[1:]} (continuación de: {head})" for p in pieces[1:]]
 
 
 def is_action(user_text: str) -> bool:
@@ -589,7 +640,14 @@ def run(messages: list[dict], workspace: str, model: Optional[str] = None, appro
     base_convo = list(convo)
     _set_active(+1)
     try:
-        final, steps = yield from _loop(convo, st, specs, user_text, limit, tag=None, depth=0)
+        parts = split_request(user_text) if (is_action(user_text) and not plan) else [user_text]
+        final, steps = yield from _loop(convo, st, specs, parts[0], limit, tag=None, depth=0)
+        for n, part in enumerate(parts[1:], start=2):
+            # un 8B hace la primera mitad de «agrega X y un test» y da todo por terminado: se le da una parte por vez
+            yield {"type": "text", "content": f"Paso {n} de {len(parts)}: {part}"}
+            convo.append({"role": "user", "content": f"Ya está lo anterior. Ahora haz esto, con herramientas: {part}"})
+            final, more = yield from _loop(convo, st, specs, part, limit, tag=None, depth=0)
+            steps += more
         attempt = 1
         while _wants_retry(st, user_text, attempt):
             attempt += 1

@@ -447,6 +447,17 @@ def _into_class(sb: Sandbox, path: str, class_name: str, content: str) -> tuple[
     clash = sorted(existing & set(_DEF.findall(content)))
     if clash:
         raise SandboxError(f"{', '.join(clash)} ya existe en la clase {class_name}; usa edit_file para cambiarlo o elige otro nombre.")
+    try:
+        block_tree = ast.parse(textwrap.dedent(content).strip("\n"))
+    except SyntaxError as e:
+        raise SandboxError(f"El código a agregar tiene un error de sintaxis: {e}") from e
+    for fn in (n for n in block_tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        first = fn.args.args[0].arg if fn.args.args else ""
+        static = any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in fn.decorator_list)
+        if first not in ("self", "cls") and not static:
+            raise SandboxError(
+                f"{fn.name} no recibe self: parece una función normal, no un método de {class_name}. "
+                f"Las funciones de un módulo se agregan con append_file en el archivo del módulo (no dentro de una clase de tests).")
     indent = " " * (cls.body[0].col_offset if cls.body else cls.col_offset + 4)
     block = textwrap.indent(textwrap.dedent(content).strip("\n"), indent)
     lines = current.splitlines(keepends=True)

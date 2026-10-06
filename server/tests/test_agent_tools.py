@@ -278,6 +278,12 @@ class AppendGuardTests(unittest.TestCase):
         with self.assertRaises(SandboxError):
             tools.add_to_class(self.sb, "nuevo.txt", "T", "def x(self): pass")
 
+    def test_add_to_class_refuses_plain_functions_that_do_not_take_self(self):
+        with self.assertRaises(SandboxError) as ctx:
+            tools.add_to_class(self.sb, "t.py", "T", "def power(a, b):\n    return a ** b")
+        self.assertIn("append_file", str(ctx.exception))
+        self.assertTrue(tools.add_to_class(self.sb, "t.py", "T", "@staticmethod\ndef util(a):\n    return a").ok)
+
     def test_add_to_class_is_a_mutating_tool_with_preview(self):
         self.assertTrue(tools.is_mutating("add_to_class"))
         args = {"path": "t.py", "class_name": "T", "content": "def test_d(self):\n    pass"}

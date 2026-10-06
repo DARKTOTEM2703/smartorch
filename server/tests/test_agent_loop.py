@@ -274,6 +274,14 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(loop._calls_from_python_syntax(evil), [])
         self.assertEqual(loop._calls_from_python_syntax('formatear_disco(path="/")'), [])
 
+    def test_tool_call_written_as_json_text_is_understood_even_inside_a_code_block(self):
+        text = 'Usa esto:\n```json\n{"name": "append_file", "arguments": {"path": "app.py", "content": "def adios():\\n    return 1\\n"}}\n```'
+        events, _ = self.play([final(text), final("listo")], answers=[True], user="agrega adios a app.py")
+        self.assertEqual(next(e for e in events if e["type"] == "tool_call")["name"], "append_file")
+        self.assertIn("def adios():", self.read_app())
+        self.assertEqual(loop._calls_from_json_text('{"name": "borrar_todo", "arguments": {}}'), [])
+        self.assertEqual(loop._calls_from_json_text('{"a": 1} texto {roto'), [])
+
     def test_a_flood_of_tool_calls_in_one_message_is_capped(self):
         flood = {"role": "assistant", "content": "",
                  "tool_calls": [{"function": {"name": "list_files", "arguments": {}}} for _ in range(30)]}
@@ -288,7 +296,7 @@ class AgentLoopTests(unittest.TestCase):
         with mock.patch.object(loop, "_chat_json", return_value=verdict) as judge:
             events, _ = self.play([call("append_file", path="app.py", content="def adios():\n    return 1"),
                                    final("agregué adios"), final("y también el test")],
-                                  answers=[True, True], user="agrega adios a app.py y un test")
+                                  answers=[True, True], user="agrega adios a app.py junto con su test")
         self.assertEqual(judge.call_count, 1)  # el juez se consulta una sola vez por tarea
         self.assertIn("def adios()", self.read_app())
         self.assertIn("def test_hola()", self.read_app())
@@ -307,6 +315,27 @@ class AgentLoopTests(unittest.TestCase):
         with mock.patch.object(loop, "_chat_json", side_effect=AssertionError("no debia forzar")):
             self.play([final("hace hola")], user="explica app.py")
             self.play([final("a"), final("b"), final("c")], mode="readonly", user="agrega una función")
+
+    def test_two_part_requests_are_split_and_never_over_split(self):
+        parts = loop.split_request("Agrega a calc.py una función power(a, b), y un test para ella.")
+        self.assertEqual(len(parts), 2)
+        self.assertIn("test", parts[1].lower())
+        self.assertIn("power", parts[1])  # la segunda parte conserva el contexto
+        self.assertEqual(len(loop.split_request("Arregla el bug y luego corre los tests")), 2)
+        for single in ("Renombra calc_total a compute_total en todo el proyecto, incluidos los tests, sin romper nada.",
+                       "Corrige el color y el tamaño del botón", "Explícame qué hace esto"):
+            self.assertEqual(loop.split_request(single), [single])
+
+    def test_each_part_of_a_split_request_is_worked_on_in_turn(self):
+        events, fake = self.play([call("append_file", path="app.py", content="def adios():\n    return 1"), final("primera parte"),
+                                  call("append_file", path="app.py", content="def test_adios():\n    assert adios() == 1"), final("segunda parte")],
+                                 answers=[True, True], user="agrega la función adios a app.py, y un test para ella")
+        self.assertIn("def adios()", self.read_app())
+        self.assertIn("def test_adios()", self.read_app())
+        self.assertTrue(any("Paso 2 de 2" in e.get("content", "") for e in events if e["type"] == "text"))
+        second_prompt = [m for m in fake.received[2] if m["role"] == "user"][-1]["content"]
+        self.assertIn("Ahora haz esto", second_prompt)
+        self.assertEqual([e["content"] for e in events if e["type"] == "final"][-1], "segunda parte")
 
     def test_tool_log_summarises_actions(self):
         events, _ = self.play([call("read_file", path="app.py"), final()])

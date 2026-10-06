@@ -33,6 +33,12 @@
       </div>
     </header>
 
+    <div class="offline" id="offlineBanner" role="alert" hidden>
+      <span id="offlineText">Ollama no está corriendo.</span>
+      <button class="btn" id="offlineStart" type="button" hidden>Iniciar Ollama</button>
+      <button class="btn" id="offlineRetry" type="button">Reintentar</button>
+    </div>
+
     <div class="pipeline" id="pipeline" hidden>
       <span data-step="router">Router</span><span data-step="rag">RAG</span><span data-step="cot">CoT</span>
       <span data-step="thinking">Pensando</span><span data-step="llm">LLM</span>

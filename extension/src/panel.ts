@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 import { isServerRunning, startSmartOrchServer } from "./runtime";
 import { serverRoot } from "./bridge";
+import { ollamaTerminal, withOllamaExe } from "./storage";
 import { bridgeScript } from "./bridge-script";
 
 const MAX_TEXT = 200_000;
@@ -145,6 +146,12 @@ class ChatSurface {
         await startSmartOrchServer(this.context, true);
         void this.render();
         break;
+      case "startOllama": {
+        const term = ollamaTerminal("SmartOrch — Ollama");
+        term.sendText(withOllamaExe("ollama serve"));
+        term.show(true);
+        break;
+      }
       case "setup":
         await vscode.commands.executeCommand("smartorch.onboarding");
         break;

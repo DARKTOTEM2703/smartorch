@@ -542,6 +542,10 @@ async function send(raw, opts = {}) {
   } catch (e) {
     if (e.name !== "AbortError") answer += `\n\n**Error:** ${e.message}`;
   } finally {
+    if (/Ollama no disponible/.test(answer)) {
+      ollama.failedText = text;
+      showOffline(true, "Ollama no responde. Inícialo y pulsa Reintentar: reenviaré tu mensaje.");
+    }
     bubble.classList.remove("typing");
     state.abort = null; setBusy(false); denyPending();
     if (raf) cancelAnimationFrame(raf);
@@ -589,6 +593,51 @@ async function checkHealth() {
 
 function applyTheme(t) { if (t) document.documentElement.dataset.theme = t; }
 
+/* ── Estado de Ollama: aviso con botones cuando no responde ── */
+const ollama = { down: false, failedText: null, timer: 0 };
+
+function showOffline(down, text) {
+  ollama.down = down;
+  $("offlineBanner").hidden = !down;
+  if (text) $("offlineText").textContent = text;
+  $("offlineStart").hidden = !NATIVE;  // solo VS Code puede lanzar `ollama serve` por ti
+}
+
+async function probeOllama() {
+  try { const r = await api("/smartorch/ollama"); showOffline(!r.running, `Ollama no está corriendo en ${r.url}.`); return !!r.running; }
+  catch { return true; }  // si el propio servidor no responde, lo muestra el indicador de conexion
+}
+
+function resendFailed() {
+  if (!ollama.failedText) return;
+  const t = ollama.failedText; ollama.failedText = null; send(t);
+}
+
+async function reconnect() {
+  const btn = $("offlineRetry"), label = btn.textContent;
+  btn.disabled = true; btn.textContent = "Comprobando…";
+  const ok = await probeOllama();
+  btn.disabled = false; btn.textContent = label;
+  if (!ok) { toast("Ollama sigue sin responder"); return; }
+  toast("Ollama conectado");
+  resendFailed();
+}
+
+function startOllama() {
+  toHost({ type: "startOllama" });
+  $("offlineText").textContent = "Iniciando Ollama…";
+  let tries = 0;
+  clearInterval(ollama.timer);
+  ollama.timer = setInterval(async () => {
+    const up = await probeOllama();
+    if (up || ++tries > 20) {
+      clearInterval(ollama.timer);
+      if (up) { toast("Ollama listo"); resendFailed(); }
+      else showOffline(true, "Ollama no arrancó. Revisa la terminal «SmartOrch — Ollama».");
+    }
+  }, 1500);
+}
+
 async function init() {
   try { applyTheme(localStorage.getItem("smartorch_theme")); } catch {}
   try {
@@ -614,6 +663,9 @@ async function init() {
   }
 
   $("newChat").onclick = newChat;
+  $("offlineRetry").onclick = reconnect;
+  $("offlineStart").onclick = startOllama;
+  probeOllama(); setInterval(() => { if (!state.abort) probeOllama(); }, 20000);
   if (!state.workspace) state.workspace = WORKSPACE;
   $("wsChip").textContent = "📁 " + (state.workspace.split(/[\\/]/).filter(Boolean).pop() || "");
   try { state.caps = await api("/smartorch/capabilities"); } catch { state.caps = { web: false }; }
