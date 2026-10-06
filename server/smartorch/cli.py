@@ -209,6 +209,53 @@ def _server_alive() -> bool:
         return False
 
 
+def _ollama_up() -> bool:
+    """¿Responde Ollama? Si no podemos ni preguntar, no molestamos al usuario."""
+    try:
+        return bool(_request("GET", "/smartorch/ollama", timeout=8).get("running"))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _find_ollama() -> "str | None":
+    import shutil
+    from smartorch.config import OLLAMA_EXE
+    return shutil.which("ollama") or (OLLAMA_EXE if OLLAMA_EXE and os.path.isfile(OLLAMA_EXE) else None)
+
+
+def _ensure_ollama(ask: bool = True) -> bool:
+    """Si Ollama esta apagado ofrece iniciarlo (igual que el boton de VS Code) y espera a que responda."""
+    if _ollama_up():
+        return True
+    print(_c(C.YELLOW, "  Ollama no está corriendo."))
+    exe = _find_ollama()
+    if not exe:
+        print(_c(C.GRAY, "  No encontré ollama.exe. Instálalo desde https://ollama.com/download y vuelve a intentarlo."))
+        return False
+    if ask:
+        try:
+            if input(_c(C.YELLOW, "  ¿Iniciarlo ahora? [S/n] ")).strip().lower() in ("n", "no"):
+                return False
+        except (EOFError, KeyboardInterrupt):
+            return False
+    try:
+        subprocess.Popen([exe, "serve"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=(subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0,
+                         start_new_session=(os.name != "nt"))
+    except OSError as e:
+        print(_c(C.RED, f"  No pude iniciar Ollama: {e}"))
+        return False
+    print(_c(C.GRAY, "  Iniciando Ollama"), end="", flush=True)
+    for _ in range(40):
+        time.sleep(1)
+        print(".", end="", flush=True)
+        if _ollama_up():
+            print(_c(C.GREEN, " listo!"))
+            return True
+    print(_c(C.RED, "\n  Ollama no respondió a tiempo."))
+    return False
+
+
 def _auto_start_server() -> bool:
     """Intenta iniciar el servidor si no está corriendo."""
     if _server_alive():
@@ -471,6 +518,7 @@ def _repl(resume_id: str | None = None):
         sys.exit(1)
 
     print(_c(C.GREEN, "  Servidor conectado."))
+    _ensure_ollama()
     print(_c(C.GRAY, "  Comandos: /yara /sigma /c2 /pentest /solid /refactor /review /test"))
     print(_c(C.GRAY, "  Escribe /help para ver todos los comandos · /exit para salir"))
     print()
@@ -535,6 +583,11 @@ def _repl(resume_id: str | None = None):
             _cmd_status()
             continue
 
+        if raw in ("/reconectar", "/reconnect"):
+            if _ensure_ollama(ask=False):
+                print(_c(C.GREEN, "  Ollama conectado."))
+            continue
+
         if raw == "/history":
             for i, m in enumerate(conversation):
                 role = _c(C.CYAN, "tú") if m["role"] == "user" else _c(C.GREEN, "SmartOrch")
@@ -596,6 +649,11 @@ def _repl(resume_id: str | None = None):
         print()
         response = _send_chat(list(conversation), stream=True, task_hint="chat")
         print()
+        if response and "Ollama no disponible" in response and _ensure_ollama():
+            print(_c(C.GRAY, "  Reenviando tu mensaje…"))
+            print()
+            response = _send_chat(list(conversation), stream=True, task_hint="chat")
+            print()
         if response:
             conversation.append({"role": "assistant", "content": response})
 
@@ -624,6 +682,7 @@ def _print_help():
         ("/plan <t>",    "Investigar y proponer un plan, sin modificar nada"),
         ("/effort <n>",  "Esfuerzo: rapido, normal o maximo"),
         ("/status",      "Estado del servidor y métricas"),
+        ("/reconectar",  "Comprobar Ollama y, si está apagado, iniciarlo"),
         ("/help",        "Este mensaje"),
         ("/exit",        "Salir"),
         ("",             ""),
@@ -889,6 +948,8 @@ def main():
         return
 
     if args.command == "agent":
+        if not _ensure_ollama():
+            sys.exit(1)
         from smartorch.cli_agent import agent_command
         task = args.input or (sys.stdin.read().strip() if not sys.stdin.isatty() else "")
         if not task:
